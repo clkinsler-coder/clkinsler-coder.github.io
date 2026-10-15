@@ -893,12 +893,29 @@ async function thumbUrl(id) {
   return url;
 }
 
-/** Shows [url] in [el] once it has loaded; if it fails (an expired link), the file-type icon stays. */
-function showThumb(el, url) {
+/** Asks Drive for a new thumbnail link (the old one ran out after a few hours). */
+async function freshThumbUrl(id) {
+  let link = null;
+  try { link = (await call(`/files/${encodeURIComponent(id)}?fields=thumbnailLink`)).thumbnailLink || null; } catch { }
+  const f = state.items.find(x => x.id === id);
+  if (f) f.thumbnailLink = link || undefined;
+  thumbLinks.set(id, link);
+  const url = link ? link.replace(/=s\d+$/, "=s400") : null;
+  thumbCache.set(id, url);
+  return url;
+}
+
+/** Shows [url] in [el] once it has loaded. A link that has run out is replaced once with a fresh one; failing that, the file-type icon stays. */
+function showThumb(el, url, retried = false) {
   const img = new Image();
   img.alt = "";
   img.referrerPolicy = "no-referrer";
   img.onload = () => { if (el.isConnected) { el.innerHTML = ""; el.append(img); el.classList.add("has-img"); } };
+  img.onerror = async () => {
+    if (retried || !el.isConnected) return;
+    const fresh = await freshThumbUrl(el.dataset.thumb);
+    if (fresh && fresh !== url) showThumb(el, fresh, true);
+  };
   img.src = url;
 }
 
@@ -1023,7 +1040,14 @@ function openViewer(files, start) {
       if (kind === "image") {
         const big = f.thumbnailLink ? f.thumbnailLink.replace(/=s\d+$/, "=s2400") : null;
         // Drive's large preview first (quick, a plain image link), then the real file if the browser can draw it.
-        if (big) body.innerHTML = `<img class="vimg" src="${esc(big)}" alt="" referrerpolicy="no-referrer">`;
+        if (big) {
+          body.innerHTML = `<img class="vimg" src="${esc(big)}" alt="" referrerpolicy="no-referrer">`;
+          // Viewer left open for hours: swap in a fresh preview link if this one has run out.
+          $(".vimg", body).onerror = async e => {
+            const fresh = await freshThumbUrl(f.id);
+            if (fresh && mine === i && !aborted && e.target.isConnected) { e.target.onerror = null; e.target.src = fresh.replace(/=s400$/, "=s2400"); }
+          };
+        }
         if (WEB_IMAGES.test(f.mimeType) && Number(f.size || 0) < 60e6) {
           try {
             const u = URL.createObjectURL(await fetchBlob(f));
