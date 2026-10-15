@@ -17,10 +17,16 @@
 
 <h2>What CK Drive accesses</h2>
 <p>When you sign in, CK Drive asks Google for permission to see, edit, create and delete your Google Drive files (the <code>drive</code> scope). It needs this to do what the Drive app does: list and search your files, upload, download, rename, move, star, share, and move files to Trash or restore them. It also reads your name, email address, profile photo and storage use so it can show which account is signed in and how much space you've used.</p>
-<p>CK Drive does all of this only when you ask it to, with the exception of duplicate checking described below. It never changes or deletes a file unless you choose that action, and moving duplicates to Trash always asks you first.</p>
+<p>CK Drive does all of this only when you ask it to, apart from duplicate checking, keeping offline files up to date, and backing up phone folders you chose, all described below. It never changes or deletes a file unless you choose that action, and moving duplicates to Trash always asks you first.</p>
 
 <h2>Duplicate checking</h2>
 <p>To tell whether a file is already in your Drive, CK Drive keeps a list on your device of the fingerprints (MD5 checksums) Google Drive already has for your files, together with their names and folders. Before an upload, CK Drive works out the fingerprint of the file on your device and compares it with that list. The list never leaves your device. CK Drive refreshes it by asking Google Drive what has changed.</p>
+
+<h2>Offline files (Android)</h2>
+<p>When you make a file available offline, CK Drive keeps a copy of it in its own storage on your phone so you can open it without a connection. It checks Google Drive now and then and downloads a new copy when the file changes. You can remove an offline copy at any time; the file stays in your Drive.</p>
+
+<h2>Phone folder backup (Android)</h2>
+<p>If you choose phone folders to back up, Android gives CK Drive permission to read only those folders. CK Drive then copies new files from them into the Drive folder you picked, hourly and soon after new photos or videos appear, on Wi-Fi unless you allow mobile data. Before uploading, it works out each file's fingerprint and skips files already in your Drive. It keeps a list of the files it has handled on your phone. It never changes or deletes anything in those folders or in your Drive. You can stop backing up a folder at any time, which also gives up the permission to read it.</p>
 
 <h2>Where your data goes</h2>
 <ul>
@@ -31,7 +37,7 @@
 <p>CK Drive's use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements. Data from Google APIs is used only to show and manage your own Drive for you. It is not used for advertising, not sold, and not shared.</p>
 
 <h2>What stays on your device</h2>
-<p>The duplicate-check list, settings like sort order, and copies of files you opened or are uploading (temporary, deleted after use) are kept on your device only. Signing out or uninstalling CK Drive removes them. In the browser, they're kept in that browser's site storage for CK Drive.</p>
+<p>The duplicate-check list, offline copies, the backup list, settings like sort order, and copies of files you opened or are uploading (temporary, deleted after use) are kept on your device only. Signing out or uninstalling CK Drive removes them, and signing out also stops all backups. In the browser, they're kept in that browser's site storage for CK Drive.</p>
 
 <h2>Removing access</h2>
 <p>You can sign out in CK Drive at any time. To remove its access to your Google account completely, go to <em>Google Account → Security → Your connections to third-party apps &amp; services</em> and remove CK Drive. Your files stay in your Google Drive.</p>
