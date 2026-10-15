@@ -328,3 +328,17 @@ tr.row:hover .check > .lt, .card:hover .check > .lt, .sel .check > .lt, .selecti
 /* Buttons on the viewer's dark background */
 #viewer .btn { background: #fff; color: #1f1f1f; border-color: transparent; }
 #viewer .btn:hover { background: #e8eaed; }
+
+/* File-type tiles (no thumbnail), like Drive's */
+.tt { --c: #5f6368; width: 28px; height: 28px; border-radius: 6px; display: inline-grid; place-items: center; flex: none;
+  background: color-mix(in srgb, var(--c) 15%, transparent); color: var(--c); }
+.tt .ms { font-size: 18px; color: var(--c); }
+.tt.lbl b { background: var(--c); color: #fff; border-radius: 3px; font-size: 8px; line-height: 1; padding: 2px 3px; font-weight: 800; letter-spacing: .2px; }
+.tt.lbl b.one { font-size: 12px; padding: 2px 4px; }
+.tt.lbl b.four { font-size: 7px; padding: 2px 2px; }
+.tt.big { width: 72px; height: 72px; border-radius: 16px; }
+.tt.big .ms { font-size: 40px; }
+.tt.big.lbl b { font-size: 16px; padding: 4px 7px; border-radius: 6px; }
+.tt.big.lbl b.one { font-size: 26px; padding: 4px 10px; }
+.tt.big.lbl b.four { font-size: 13px; }
+.card .thumb .tt.big .ms { font-size: 40px; }

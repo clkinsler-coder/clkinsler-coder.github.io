@@ -412,25 +412,56 @@ function fmtWhen(t) {
 }
 
 const NATIVE = "application/vnd.google-apps.";
-function typeIcon(f) {
+/**
+ * How a file type looks when there's no thumbnail, like Drive: a colored icon on a lightly tinted tile, or a
+ * colored badge with short text for types Drive marks that way (APK, EXE, ZIP…). Same rules as the phone's typeStyle.
+ */
+function typeStyle(f) {
   const m = f.mimeType || "";
-  if (m === FOLDER) return ["folder", "#5f6368"];
-  if (m === NATIVE + "document") return ["description", "#4285f4"];
-  if (m === NATIVE + "spreadsheet") return ["table_chart", "#0f9d58"];
-  if (m === NATIVE + "presentation") return ["slideshow", "#f4b400"];
-  if (m === NATIVE + "form") return ["list_alt", "#7248b9"];
-  if (m === "application/pdf") return ["picture_as_pdf", "#db4437"];
-  if (m.startsWith("image/")) return ["image", "#db4437"];
-  if (m.startsWith("video/")) return ["movie", "#db4437"];
-  if (m.startsWith("audio/")) return ["music_note", "#8e24aa"];
-  if (/zip|compressed|tar|rar/.test(m)) return ["folder_zip", "#5f6368"];
-  if (/word/.test(m)) return ["description", "#4285f4"];
-  if (/sheet|excel/.test(m)) return ["table_chart", "#0f9d58"];
-  if (/presentation|powerpoint/.test(m)) return ["slideshow", "#f4b400"];
-  return ["draft", "#5f6368"];
+  const ext = /\.([a-z0-9]+)$/i.test(f.name || "") ? RegExp.$1.toLowerCase() : "";
+  const RED = "#ea4335", BLUE = "#4285f4", GREEN = "#0f9d58", YELLOW = "#f4b400", GREY = "#5f6368";
+  const has = (...xs) => xs.includes(ext);
+  if (m === FOLDER) return { c: GREY, i: "folder", folder: true };
+  if (m === NATIVE + "document") return { c: BLUE, i: "description" };
+  if (m === NATIVE + "spreadsheet") return { c: GREEN, i: "table_chart" };
+  if (m === NATIVE + "presentation") return { c: YELLOW, i: "slideshow" };
+  if (m === NATIVE + "form") return { c: "#7248b9", i: "list_alt" };
+  if (m === NATIVE + "drawing") return { c: RED, i: "draw" };
+  if (m === NATIVE + "shortcut") return { c: GREY, i: "shortcut" };
+  if (ext === "apk" || m === "application/vnd.android.package-archive") return { c: "#34a853", t: "APK" };
+  if (has("exe", "msi", "msix", "bat", "cmd")) return { c: "#1a73e8", t: ext.toUpperCase() };
+  if (has("dmg", "pkg")) return { c: GREY, t: ext.toUpperCase() };
+  if (m === "application/pdf" || ext === "pdf") return { c: RED, i: "picture_as_pdf" };
+  if (m.startsWith("image/")) return { c: RED, i: "image" };
+  if (m.startsWith("video/")) return { c: RED, i: "movie" };
+  if (m.startsWith("audio/")) return { c: "#e91e63", i: "music_note" };
+  if (has("doc", "docx", "odt", "rtf") || /wordprocessing|msword/.test(m)) return { c: "#2b579a", t: "W" };
+  if (has("xls", "xlsx", "ods") || /spreadsheet|excel/.test(m)) return { c: "#217346", t: "X" };
+  if (ext === "csv") return { c: GREEN, t: "CSV" };
+  if (has("ppt", "pptx", "odp") || /presentation|powerpoint/.test(m)) return { c: "#d24726", t: "P" };
+  if (has("zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz") || /zip|compressed/.test(m)) return { c: GREY, t: (ext || "zip").toUpperCase().slice(0, 4) };
+  if (has("txt", "md", "log") || m === "text/plain") return { c: BLUE, i: "article" };
+  if (has("html", "htm", "css", "js", "ts", "kt", "java", "py", "json", "xml", "ps1", "sh", "c", "cpp", "cs", "go")) return { c: "#455a64", i: "code" };
+  if (has("ttf", "otf", "woff", "woff2")) return { c: GREY, i: "font_download" };
+  if (ext === "ics") return { c: BLUE, i: "event" };
+  if (ext === "vcf") return { c: BLUE, i: "contacts" };
+  if (has("iso", "img")) return { c: GREY, i: "album" };
+  return { c: GREY, i: "draft" };
 }
-const iconHtml = f => { const [i, c] = typeIcon(f); return `<span class="ms" style="color:${c}">${i}</span>`; };
-const isNative = f => (f.mimeType || "").startsWith(NATIVE) && f.mimeType !== FOLDER;
+
+/** Icon and color only. */
+function typeIcon(f) {
+  const t = typeStyle(f);
+  return [t.i || { APK: "android", W: "description", X: "table_chart", CSV: "table_chart", P: "slideshow" }[t.t] || (/^(ZIP|RAR|7Z|TAR|GZ|TGZ|BZ2|XZ)$/.test(t.t) ? "folder_zip" : "draft"), t.c];
+}
+
+/** The tile for a file with no thumbnail; folders stay a plain icon, like Drive. [big] for grid cards. */
+function iconHtml(f, big = false) {
+  const t = typeStyle(f);
+  if (t.folder) return `<span class="ms" style="color:${t.c}">folder</span>`;
+  const label = t.t ? `<b class="${t.t.length <= 1 ? "one" : t.t.length <= 3 ? "" : "four"}">${esc(t.t)}</b>` : `<span class="ms">${t.i}</span>`;
+  return `<span class="tt${big ? " big" : ""}${t.t ? " lbl" : ""}" style="--c:${t.c}">${label}</span>`;
+}const isNative = f => (f.mimeType || "").startsWith(NATIVE) && f.mimeType !== FOLDER;
 const linkFor = f => f.webViewLink || "https://drive.google.com/open?id=" + f.id;
 
 function exportFor(f) {
@@ -753,7 +784,7 @@ function renderList() {
         <div class="head"><button class="check" data-check title="Select"><span class="lt">${iconHtml(f)}</span><span class="ms box">check_circle</span></button>
           <span class="n" title="${esc(f.name)}">${esc(f.name)}</span>
           <button class="icon-btn" data-more title="More"><span class="ms">more_vert</span></button></div>
-        <div class="thumb" ${f.thumbnailLink ? `data-thumb="${esc(f.id)}"` : ""}>${iconHtml(f)}</div>
+        <div class="thumb" ${f.thumbnailLink ? `data-thumb="${esc(f.id)}"` : ""}>${iconHtml(f, true)}</div>
       </div>`).join("")}</div>`;
   } else {
     c.innerHTML = `<table class="files"><thead><tr><th>Name</th><th class="col-owner">Owner</th>
@@ -1494,7 +1525,7 @@ function renderUploads() {
   box.innerHTML = `<div class="uh"><span class="t">${active ? `Uploading ${active} item${active === 1 ? "" : "s"}` :
     failed ? `${failed} upload${failed === 1 ? "" : "s"} failed` : `${queue.length} upload${queue.length === 1 ? "" : "s"} complete`}</span>
     ${active ? "" : `<button class="icon-btn" id="up-close" title="Close"><span class="ms">close</span></button>`}</div>
-    <div class="ul">${queue.map(q => `<div class="ui">${iconHtml({ mimeType: q.file.type })}<div class="info"><div class="n">${esc(q.name)}</div>
+    <div class="ul">${queue.map(q => `<div class="ui">${iconHtml({ mimeType: q.file.type, name: q.name })}<div class="info"><div class="n">${esc(q.name)}</div>
       ${q.error ? `<small class="err">${esc(q.error)}</small>` : q.done ? `<small>Done</small>` :
         `<div class="progress"><i style="width:${q.size ? q.sent / q.size * 100 : 0}%"></i></div>`}</div>
       ${q.done ? `<span class="ms" style="color:var(--ok)">check_circle</span>` : ""}</div>`).join("")}</div>`;
