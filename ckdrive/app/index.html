@@ -25,12 +25,15 @@
         <div id="new-menu" class="menu hidden">
           <button data-new="files"><span class="ms">upload_file</span>Upload files</button>
           <button data-new="folder-upload"><span class="ms">drive_folder_upload</span>Upload folder</button>
+          <button data-new="camera" class="touch-only"><span class="ms">photo_camera</span>Take photo or video</button>
           <hr>
           <button data-new="folder"><span class="ms">create_new_folder</span>New folder</button>
         </div>
       </div>
       <nav id="nav">
         <a data-nav="files"><span class="ms">home_storage</span>My Drive</a>
+        <a data-nav="computers"><span class="ms">computer</span>Computers</a>
+        <a data-nav="drives"><span class="ms">folder_shared</span>Shared drives</a>
         <a data-nav="recent"><span class="ms">schedule</span>Recent</a>
         <a data-nav="starred"><span class="ms">star</span>Starred</a>
         <a data-nav="shared"><span class="ms">group</span>Shared with me</a>
@@ -84,6 +87,7 @@
 
   <input id="file-input" type="file" multiple hidden>
   <input id="folder-input" type="file" webkitdirectory hidden>
+  <input id="camera-input" type="file" accept="image/*,video/*" capture="environment" hidden>
 
   <script src="config.js"></script>
   <script src="md5.js"></script>

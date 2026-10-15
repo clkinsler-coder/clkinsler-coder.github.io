@@ -5,7 +5,7 @@ const SCOPE = "https://www.googleapis.com/auth/drive";
 const API = "https://www.googleapis.com/drive/v3";
 const FOLDER = "application/vnd.google-apps.folder";
 const FIELDS = "id,name,mimeType,size,md5Checksum,modifiedTime,parents,starred,trashed,shared,ownedByMe," +
-  "owners(displayName),webViewLink,thumbnailLink,iconLink";
+  "owners(displayName),webViewLink,thumbnailLink,iconLink,driveId";
 const ROOT = { id: "root", name: "My Drive" };
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -96,6 +96,9 @@ async function call(url, opts = {}, retried = false) {
   const headers = Object.assign({ Authorization: "Bearer " + t }, opts.headers || {});
   let body = opts.body;
   if (opts.json !== undefined) { headers["Content-Type"] = "application/json; charset=UTF-8"; body = JSON.stringify(opts.json); }
+  // Shared drives: every file call has to say it understands them.
+  if (url.includes("/files") && !url.includes("/files/trash") && !url.includes("supportsAllDrives"))
+    url += (url.includes("?") ? "&" : "?") + "supportsAllDrives=true";
   const r = await fetch(url.startsWith("http") ? url : API + url, { method: opts.method || "GET", headers, body });
   if (r.status === 401 && !retried) { token = null; return call(url, opts, true); }
   if (!r.ok) {
@@ -112,8 +115,11 @@ const qs = o => Object.entries(o).filter(([, v]) => v != null).map(([k, v]) => k
 const quote = s => "'" + String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'";
 
 const drive = {
-  list: (q, orderBy, pageToken, pageSize = 100, fields = FIELDS) =>
-    call("/files?" + qs({ q, orderBy, pageToken, pageSize, fields: `nextPageToken,files(${fields})` })),
+  list: (q, orderBy, pageToken, pageSize = 100, fields = FIELDS, extra = {}) =>
+    call("/files?" + qs({ q, orderBy, pageToken, pageSize, fields: `nextPageToken,files(${fields})`, includeItemsFromAllDrives: true,
+      ...(extra.driveId ? { corpora: "drive", driveId: extra.driveId } : extra.corpora ? { corpora: extra.corpora } : {}) })),
+  sharedDrives: async () => ((await call("/drives?pageSize=100&fields=" + encodeURIComponent("drives(id,name)"))).drives || [])
+    .map(d => ({ id: d.id, name: d.name, mimeType: FOLDER, driveId: d.id, ownedByMe: false })),
   get: id => call(`/files/${encodeURIComponent(id)}?fields=${encodeURIComponent(FIELDS)}`),
   about: () => call("/about?fields=" + encodeURIComponent("user(displayName,emailAddress,photoLink),storageQuota(limit,usage)")),
   patch: (id, json, extra = {}) => call(`/files/${encodeURIComponent(id)}?` + qs({ fields: FIELDS, ...extra }), { method: "PATCH", json }),
@@ -131,7 +137,7 @@ const drive = {
 /** Resumable upload with progress (XHR, since fetch has no upload progress). */
 async function uploadFile(file, name, parent, onProgress) {
   const t = await getToken();
-  const start = await fetch("https://www.googleapis.com/upload/drive/v3/files?" + qs({ uploadType: "resumable", fields: FIELDS }), {
+  const start = await fetch("https://www.googleapis.com/upload/drive/v3/files?" + qs({ uploadType: "resumable", fields: FIELDS, supportsAllDrives: true }), {
     method: "POST",
     headers: {
       Authorization: "Bearer " + t,
@@ -230,9 +236,11 @@ const index = {
     return p;
   },
 
-  rebuild() {
+  rebuild(force = true) {
     return this.run(async () => {
       await this.load();
+      // Two callers can ask for the first scan at once (page load and an upload): only one scans.
+      if (!force && this.token) return;
       this.state = "scanning"; this.found = 0; this.emit();
       try {
         const start = (await drive.startToken()).startPageToken;
@@ -257,7 +265,7 @@ const index = {
 
   async sync() {
     await this.load();
-    if (!this.token) return this.rebuild();
+    if (!this.token) return this.rebuild(false);
     return this.run(async () => {
       let t = this.token;
       for (; ;) {
@@ -290,14 +298,16 @@ const index = {
 
   path(parents) {
     const parts = [];
-    let cur = parents && parents[0], guard = 0;
+    let cur = parents && parents[0], guard = 0, top = "My Drive";
     while (cur && guard++ < 30) {
       const f = this.folders.get(cur);
       if (!f) break;
       parts.unshift(f.name);
       cur = f.parents[0];
+      // A folder with no parent at all is a computer that Drive for desktop backs up.
+      if (!cur) top = "Computers";
     }
-    return ["My Drive", ...parts].join(" / ");
+    return [top, ...parts].join(" / ");
   },
 };
 
@@ -473,7 +483,7 @@ const state = {
 const SORTS = { name: "folder,name_natural", modified: "folder,modifiedTime desc", size: "folder,quotaBytesUsed desc" };
 
 function currentFolder() {
-  if (state.view === "files" || ((state.view === "starred" || state.view === "shared") && state.trail.length)) {
+  if (state.view === "files" || (["starred", "shared", "computers", "drives"].includes(state.view) && state.trail.length)) {
     const t = state.trail.at(-1);
     if (t) return t;
   }
@@ -486,12 +496,14 @@ function queryFor() {
     case "files": return [`${quote(inside.id)} in parents and trashed=false`, SORTS[state.sort]];
     case "starred":
     case "shared":
-      if (state.trail.length) return [`${quote(inside.id)} in parents and trashed=false`, SORTS[state.sort]];
+    case "computers":
+    case "drives":
+      if (state.trail.length) return [`${quote(inside.id)} in parents and trashed=false`, SORTS[state.sort], { driveId: inside.driveId }];
       return state.view === "starred"
         ? ["starred=true and trashed=false", "folder,name_natural"]
         : ["sharedWithMe=true and trashed=false", "sharedWithMeTime desc"];
     case "recent": return [`trashed=false and mimeType!=${quote(FOLDER)}`, "recency desc"];
-    case "search": return [`(name contains ${quote(state.query)} or fullText contains ${quote(state.query)}) and trashed=false`, null];
+    case "search": return [`(name contains ${quote(state.query)} or fullText contains ${quote(state.query)}) and trashed=false`, null, { corpora: "allDrives" }];
     case "trash": return ["trashed=true and 'me' in owners", "recency desc"];
   }
 }
@@ -522,8 +534,7 @@ async function load() {
   state.items = []; state.next = null; state.loading = true; state.error = null;
   renderList();
   try {
-    const [q, order] = queryFor();
-    const r = await drive.list(q, order);
+    const r = await listFor();
     if (seq !== state.seq) return;
     state.items = r.files || []; state.next = r.nextPageToken || null;
   } catch (e) {
@@ -534,13 +545,24 @@ async function load() {
   renderList();
 }
 
+/** The current view's first page. Computers and Shared drives have their own top-level lists. */
+async function listFor(pageToken) {
+  if (!state.trail.length && state.view === "computers") {
+    await index.sync();
+    return { files: [...index.folders].filter(([, f]) => !f.parents.length).map(([id, f]) => ({ id, name: f.name, mimeType: FOLDER, ownedByMe: true }))
+      .sort((a, b) => a.name.localeCompare(b.name)) };
+  }
+  if (!state.trail.length && state.view === "drives") return { files: (await drive.sharedDrives()).sort((a, b) => a.name.localeCompare(b.name)) };
+  const [q, order, extra] = queryFor();
+  return drive.list(q, order, pageToken, 100, FIELDS, extra || {});
+}
+
 async function loadMore() {
   if (!state.next || state.loading) return;
   const seq = state.seq;
   state.loading = true;
   try {
-    const [q, order] = queryFor();
-    const r = await drive.list(q, order, state.next);
+    const r = await listFor(state.next);
     if (seq !== state.seq) return;
     state.items = state.items.concat(r.files || []); state.next = r.nextPageToken || null;
   } catch (e) { toast(e.message); }
@@ -551,8 +573,7 @@ async function loadMore() {
 function reloadQuiet() {
   if (state.view === "duplicates") return;
   const seq = state.seq;
-  const [q, order] = queryFor();
-  drive.list(q, order).then(r => {
+  listFor().then(r => {
     if (seq !== state.seq) return;
     state.items = r.files || []; state.next = r.nextPageToken || null;
     const ids = new Set(state.items.map(f => f.id));
@@ -566,7 +587,8 @@ function reloadQuiet() {
 function renderChrome() {
   document.querySelectorAll("#nav a").forEach(a => a.classList.toggle("active", a.dataset.nav === state.view));
   const crumbs = $("#crumbs");
-  const titles = { recent: "Recent", starred: "Starred", shared: "Shared with me", trash: "Trash", duplicates: "Duplicates" };
+  const titles = { recent: "Recent", starred: "Starred", shared: "Shared with me", trash: "Trash", duplicates: "Duplicates",
+    computers: "Computers", drives: "Shared drives" };
   let trail;
   if (state.view === "files") trail = state.trail;
   else if (state.view === "search") trail = [{ name: `Results for "${state.query}"` }];
@@ -664,7 +686,7 @@ function renderSelection() {
   bar.classList.remove("hidden");
   const files = selectedFiles();
   const trash = state.view === "trash";
-  const mine = files.every(f => f.ownedByMe);
+  const mine = files.every(f => f.ownedByMe || f.driveId);
   const allStarred = files.every(f => f.starred);
   const btn = (icon, title, act, show = true) => show ? `<button class="icon-btn" data-sel="${act}" title="${title}"><span class="ms">${icon}</span></button>` : "";
   bar.innerHTML = `<button class="icon-btn" data-sel="clear" title="Clear selection (Esc)"><span class="ms">close</span></button>
@@ -790,9 +812,10 @@ const dropItem = id => { state.items = state.items.filter(x => x.id !== id); ren
 
 function openItem(f) {
   if (f.mimeType === FOLDER) {
-    if (state.view === "files") go("files", { trail: [...state.trail, { id: f.id, name: f.name }] });
+    const crumb = { id: f.id, name: f.name, driveId: f.driveId || state.trail.at(-1)?.driveId };
+    if (state.view === "files") go("files", { trail: [...state.trail, crumb] });
     else go(state.view === "search" || state.view === "recent" ? "files" : state.view,
-      { trail: state.view === "search" || state.view === "recent" ? [ROOT, { id: f.id, name: f.name }] : [...state.trail, { id: f.id, name: f.name }] });
+      { trail: state.view === "search" || state.view === "recent" ? [ROOT, crumb] : [...state.trail, crumb] });
     return;
   }
   if (viewKind(f)) {
@@ -1069,7 +1092,7 @@ function showMenu(f, x, y, opts = {}) {
       const n = await ask("Rename", f.name, "Rename");
       if (n && n !== f.name) replaceItem(await drive.patch(f.id, { name: n }));
     }],
-    f.ownedByMe && ["drive_file_move", "Move", async () => {
+    (f.ownedByMe || f.driveId) && ["drive_file_move", "Move", async () => {
       const to = await pickFolder(`Move "${f.name}"`, "Move here", f.id);
       if (!to) return;
       await drive.patch(f.id, {}, { addParents: to.id, removeParents: (f.parents || []).join(",") || undefined });
@@ -1082,7 +1105,7 @@ function showMenu(f, x, y, opts = {}) {
     f.mimeType !== FOLDER && ["file_copy", "Make a copy", async () => { await drive.copy(f); toast("Made a copy of " + f.name); reloadQuiet(); }],
     ["info", "Details", () => details(f)],
     "-",
-    f.ownedByMe && ["delete", "Move to trash", async () => {
+    (f.ownedByMe || f.driveId) && ["delete", "Move to trash", async () => {
       await drive.patch(f.id, { trashed: true }); dropItem(f.id); index.files.delete(f.id); toast(f.name + " moved to trash");
       if (opts.onTrash) opts.onTrash();
     }],
@@ -1106,7 +1129,7 @@ function showBulkMenu(x, y) {
   const m = $("#ctx-menu");
   const files = selectedFiles();
   const trash = state.view === "trash";
-  const mine = files.every(f => f.ownedByMe);
+  const mine = files.every(f => f.ownedByMe || f.driveId);
   const items = trash
     ? [["restore_from_trash", "Restore", "restore"], ["delete_forever", "Delete forever", "delete"]]
     : [
@@ -1175,9 +1198,16 @@ async function startUpload(files, parent = currentFolder()) {
   upBtn.disabled = true;
 
   let note = null;
+  // The very first time, the whole Drive is listed once; say so, so it doesn't look like every upload will wait.
+  const showScan = () => {
+    if (index.state === "scanning") $(".note", status).textContent =
+      `One-time setup: listing your Drive (${index.found} files so far). After this, checks take a second.`;
+  };
+  index.listeners.add(showScan);
+  showScan();
   try { await index.sync(); } catch (e) {
     note = index.state === "ready" ? "Couldn't refresh the duplicate list; using the last one." : "Couldn't check Drive for duplicates (" + e.message + ").";
-  }
+  } finally { index.listeners.delete(showScan); }
   const seen = new Map();
   cands = [];
   for (const { file, path } of files) {
@@ -1255,6 +1285,10 @@ async function pump() {
       });
       u.done = true; u.sent = u.size; any = true;
       index.apply(f); index.save(); index.emit();
+      // A duplicate made on purpose ("Upload anyway") isn't announced later.
+      const copies = index.matches(u.md5, u.size).length;
+      const known = store.get("dupKnown", null);
+      if (copies > 1 && known) { known[u.md5 + ":" + u.size] = copies; store.set("dupKnown", known); }
     } catch (e) { u.error = e.message; }
     renderUploads();
   }
@@ -1279,6 +1313,28 @@ function renderUploads() {
   if (c) c.onclick = () => { queue.length = 0; renderUploads(); };
 }
 
+// ---------- New duplicates since last time ----------
+// Duplicates can appear by any route (the Drive app, Drive for desktop, email attachments saved twice…).
+
+const dupKey = g => g.key;
+function markDuplicatesSeen(groups) { store.set("dupKnown", Object.fromEntries(groups.map(g => [dupKey(g), g.copies.length]))); }
+
+function announceNewDuplicates() {
+  const groups = index.groups();
+  const before = store.get("dupKnown", null);
+  if (!before) { markDuplicatesSeen(groups); return; } // first visit: nothing is "new" yet
+  const fresh = groups.filter(g => (before[dupKey(g)] || 1) < g.copies.length);
+  if (!fresh.length) return;
+  const name = fresh[0].copies.reduce((a, b) => (b.modified > a.modified ? b : a)).name;
+  const t = $("#toast");
+  t.innerHTML = esc(fresh.length === 1 ? `"${name}" is in your Drive more than once.` : `${fresh.length} files are in your Drive more than once.`) +
+    ` <a href="#duplicates" style="color:#8ab4f8;margin-left:8px">Review</a>`;
+  $("a", t).onclick = e => { e.preventDefault(); t.classList.add("hidden"); go("duplicates"); };
+  t.classList.remove("hidden");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.add("hidden"), 12000);
+}
+
 // ---------- Duplicates page ----------
 
 const keep = new Map();
@@ -1295,6 +1351,7 @@ function renderDuplicates() {
   if (index.state === "failed") { c.innerHTML = `<div class="empty error">${esc(index.error)}</div>`; return; }
   if (index.state !== "ready") { c.innerHTML = `<div class="empty">Loading…</div>`; return; }
   const groups = index.groups();
+  markDuplicatesSeen(groups);
   if (!groups.length) {
     c.innerHTML = `<div class="empty"><span class="ms">check_circle</span>No duplicates in your Drive<br><small>${index.files.size} files checked · ${fmtWhen(index.updated)}</small></div>`;
     return;
@@ -1344,12 +1401,12 @@ async function startApp() {
   $("#app").classList.remove("hidden");
   index.listeners.add(() => { renderDupBadge(); if (state.view === "duplicates") renderDuplicates(); });
   const h = location.hash.slice(1);
-  if (["recent", "starred", "shared", "trash", "duplicates"].includes(h)) state.view = h;
+  if (["recent", "starred", "shared", "trash", "duplicates", "computers", "drives"].includes(h)) state.view = h;
   history.replaceState({ view: state.view, trail: state.view === "files" ? [ROOT] : [], query: "" }, "", location.hash || "#files");
   if (state.view !== "files") state.trail = [];
   load();
   drive.about().then(a => { state.account = a; renderStorage(); }).catch(() => { });
-  index.sync().catch(e => console.warn("index", e));
+  index.sync().then(announceNewDuplicates).catch(e => console.warn("index", e));
 }
 
 function wire() {
@@ -1381,12 +1438,23 @@ function wire() {
     hideMenus();
     if (b.dataset.new === "files") $("#file-input").click();
     if (b.dataset.new === "folder-upload") $("#folder-input").click();
+    if (b.dataset.new === "camera") $("#camera-input").click();
     if (b.dataset.new === "folder") guard("Couldn't make folder", async () => {
       const n = await ask("New folder", "Untitled folder", "Create");
       if (n) { await drive.folder(n, currentFolder().id); reloadQuiet(); }
     });
   };
   $("#file-input").onchange = e => { startUpload([...e.target.files].map(file => ({ file }))); e.target.value = ""; };
+  $("#camera-input").onchange = e => {
+    // Phones name camera shots oddly ("image.jpg"); give them a date-time name like the camera app does.
+    const files = [...e.target.files].map(f => {
+      const d = new Date(), p = n => String(n).padStart(2, "0");
+      const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+      const ext = (f.name.match(/\.[a-z0-9]+$/i) || [f.type.startsWith("video/") ? ".mp4" : ".jpg"])[0];
+      return { file: new File([f], (f.type.startsWith("video/") ? "VID_" : "IMG_") + stamp + ext, { type: f.type }) };
+    });
+    startUpload(files); e.target.value = "";
+  };
   $("#folder-input").onchange = e => {
     startUpload([...e.target.files].map(file => ({ file, path: file.webkitRelativePath.split("/").slice(0, -1).join("/") })));
     e.target.value = "";

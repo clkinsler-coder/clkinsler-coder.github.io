@@ -20,7 +20,10 @@
 <p>CK Drive does all of this only when you ask it to, apart from duplicate checking, keeping offline files up to date, and backing up phone folders you chose, all described below. It never changes or deletes a file unless you choose that action, and moving duplicates to Trash always asks you first.</p>
 
 <h2>Duplicate checking</h2>
-<p>To tell whether a file is already in your Drive, CK Drive keeps a list on your device of the fingerprints (MD5 checksums) Google Drive already has for your files, together with their names and folders. Before an upload, CK Drive works out the fingerprint of the file on your device and compares it with that list. The list never leaves your device. CK Drive refreshes it by asking Google Drive what has changed.</p>
+<p>To tell whether a file is already in your Drive, CK Drive keeps a list on your device of the fingerprints (MD5 checksums) Google Drive already has for your files, together with their names and folders. Before an upload, CK Drive works out the fingerprint of the file on your device and compares it with that list. The list never leaves your device. CK Drive refreshes it by asking Google Drive what has changed. On Android it does this every few hours in the background as well, so it can tell you with a notification when a file appears in your Drive more than once. You can turn that notification off on the Duplicates screen.</p>
+
+<h2>Scanning and camera (Android)</h2>
+<p>"Scan a document" uses Google's document scanner, which runs on your phone through Google Play services. "Take a photo" and "Record a video" use your phone's camera app. CK Drive itself doesn't have access to the camera. Scans, photos and videos are uploaded to your Drive only after you see them on the upload screen, and CK Drive's temporary copies are deleted within a day.</p>
 
 <h2>Offline files (Android)</h2>
 <p>When you make a file available offline, CK Drive keeps a copy of it in its own storage on your phone so you can open it without a connection. It checks Google Drive now and then and downloads a new copy when the file changes. You can remove an offline copy at any time; the file stays in your Drive.</p>

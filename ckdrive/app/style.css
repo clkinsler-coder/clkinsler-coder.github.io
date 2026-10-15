@@ -294,3 +294,7 @@ tr.row:not(.sel) .check .box, .card:not(.sel) .check .box { font-variation-setti
   .uploads { right: 16px; }
   .drop-hint { inset: 56px 16px 0 16px; }
 }
+
+/* Only on phones and tablets (the camera button) */
+.touch-only { display: none !important; }
+@media (pointer: coarse) { .touch-only { display: flex !important; } }
