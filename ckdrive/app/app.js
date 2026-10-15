@@ -441,7 +441,7 @@ function confirmBox(title, text, label, danger = true) {
 /** Browse folders and pick one. */
 function pickFolder(title, confirm, exclude) {
   return new Promise(res => {
-    let trail = [ROOT], done = false;
+    let trail = [ROOT], done = false, made = null, okBtn = null;
     const wrap = document.createElement("div");
     wrap.innerHTML = `<div class="picker-path"></div>
       <div class="picker-new hidden"><input type="text" placeholder="Folder name" value="Untitled folder"><button class="btn primary">Create</button></div>
@@ -454,7 +454,8 @@ function pickFolder(title, confirm, exclude) {
       try {
         const f = await drive.folder(name, trail.at(-1).id);
         newRow.classList.add("hidden");
-        trail = [...trail, { id: f.id, name: f.name }];
+        // Stay here and select it, so it's visible and the confirm button uses it.
+        made = { id: f.id, name: f.name };
         draw();
       } catch (e) { toast("Couldn't make the folder: " + e.message); }
     };
@@ -466,7 +467,8 @@ function pickFolder(title, confirm, exclude) {
         `<span class="grow">${esc(trail.map(t => t.name).join(" / "))}</span>` +
         `<button class="icon-btn" data-new-folder title="New folder here"><span class="ms">create_new_folder</span></button>`;
       const up = $("[data-up]", path);
-      if (up) up.onclick = () => { trail = trail.slice(0, -1); draw(); };
+      if (up) up.onclick = () => { made = null; trail = trail.slice(0, -1); draw(); };
+      if (okBtn) okBtn.textContent = made ? confirm.replace(" here", "") + " to " + made.name : confirm;
       $("[data-new-folder]", path).onclick = () => {
         newRow.classList.toggle("hidden");
         if (!newRow.classList.contains("hidden")) { newName.value = "Untitled folder"; newName.focus(); newName.select(); }
@@ -475,21 +477,27 @@ function pickFolder(title, confirm, exclude) {
       list.innerHTML = `<div class="empty" style="padding:40px">Loading…</div>`;
       try {
         const r = await drive.list(`${quote(trail.at(-1).id)} in parents and trashed=false and mimeType=${quote(FOLDER)}`, "name_natural", null, 500);
-        const fs = (r.files || []).filter(f => f.id !== exclude);
-        list.innerHTML = fs.length ? "" : `<div class="empty" style="padding:40px">No folders inside</div>`;
+        let fs = (r.files || []).filter(f => f.id !== exclude);
+        if (made) fs = [made, ...fs.filter(f => f.id !== made.id)];
+        list.innerHTML = (made ? `<div class="picker-made">Made "${esc(made.name)}". It's selected below.</div>` : "") +
+          (fs.length ? "" : `<div class="empty" style="padding:40px">No folders inside</div>`);
         fs.forEach(f => {
           const b = document.createElement("button");
-          b.innerHTML = `<span class="ms">folder</span>${esc(f.name)}`;
-          b.onclick = () => { trail = [...trail, { id: f.id, name: f.name }]; draw(); };
+          const isNew = made && f.id === made.id;
+          if (isNew) b.className = "chosen";
+          b.innerHTML = `<span class="ms">${isNew ? "check_circle" : "folder"}</span>${esc(f.name)}` +
+            (isNew ? `<small>New folder · click to open it</small>` : "");
+          b.onclick = () => { made = null; trail = [...trail, { id: f.id, name: f.name }]; draw(); };
           list.append(b);
         });
       } catch (e) { list.innerHTML = `<div class="empty error">${esc(e.message)}</div>`; }
     };
-    modal({
+    const m = modal({
       title, body: wrap,
-      actions: [{ label: "Cancel" }, { label: confirm, primary: true, run: () => { done = true; res(trail.at(-1)); } }],
+      actions: [{ label: "Cancel" }, { label: confirm, primary: true, run: () => { done = true; res(made || trail.at(-1)); } }],
       onClose: () => { if (!done) res(null); },
     });
+    okBtn = m.actions.querySelector(".btn.primary");
     draw();
   });
 }
@@ -1459,11 +1467,63 @@ async function startApp() {
   index.listeners.add(() => { renderDupBadge(); if (state.view === "duplicates") renderDuplicates(); });
   const h = location.hash.slice(1);
   if (["recent", "starred", "shared", "trash", "duplicates", "computers", "drives"].includes(h)) state.view = h;
-  history.replaceState({ view: state.view, trail: state.view === "files" ? [ROOT] : [], query: "" }, "", location.hash || "#files");
   if (state.view !== "files") state.trail = [];
+  // Back where it was before an update reload (same folder, same search).
+  try {
+    const back = JSON.parse(sessionStorage.getItem("ckdrive.place") || "null");
+    sessionStorage.removeItem("ckdrive.place");
+    if (back) { state.view = back.view; state.trail = back.trail; state.query = back.query || ""; }
+  } catch { }
+  history.replaceState({ view: state.view, trail: state.trail, query: state.query }, "", location.hash || "#files");
+  if (state.view === "search") $("#search-input").value = state.query;
   load();
   drive.about().then(a => { state.account = a; renderStorage(); }).catch(() => { });
   index.sync().then(announceNewDuplicates).catch(e => console.warn("index", e));
+  watchForUpdates();
+}
+
+// ---------- Updating itself ----------
+// Each release has a version (stamp-web.ps1). An open CK Drive checks for a newer one now and then and
+// reloads into it, but never in the middle of an upload, a dialog or the viewer.
+
+const MY_VERSION = document.querySelector('meta[name="ckdrive-version"]')?.content || "";
+let updateWaiting = false;
+
+function safeToReload() {
+  return !queue.some(q => !q.done && !q.error) && !$("#modal-root").children.length && !$("#viewer") && !state.sel.size;
+}
+
+function reloadNow() {
+  try { sessionStorage.setItem("ckdrive.place", JSON.stringify({ view: state.view, trail: state.trail, query: state.query })); } catch { }
+  location.reload();
+}
+
+async function checkForUpdate() {
+  if (!MY_VERSION || updateWaiting) return;
+  try {
+    const r = await fetch("version.json?t=" + Date.now(), { cache: "no-store" });
+    if (!r.ok) return;
+    const v = (await r.json()).version;
+    if (v && v !== MY_VERSION) updateWaiting = true;
+  } catch { return; }
+  if (updateWaiting) applyUpdate();
+}
+
+function applyUpdate() {
+  if (safeToReload()) { reloadNow(); return; }
+  // Busy: say so once, and reload as soon as it's safe.
+  if (!$("#update-note")) {
+    document.body.insertAdjacentHTML("beforeend",
+      `<div id="update-note" class="toast" style="bottom:84px">CK Drive has been updated. It will refresh by itself when you're done.</div>`);
+  }
+  setTimeout(applyUpdate, 15000);
+}
+
+function watchForUpdates() {
+  setInterval(checkForUpdate, 10 * 60 * 1000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) checkForUpdate(); });
+  addEventListener("focus", checkForUpdate);
+  setTimeout(checkForUpdate, 30 * 1000);
 }
 
 function wire() {

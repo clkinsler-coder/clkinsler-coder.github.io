@@ -301,3 +301,7 @@ tr.row:not(.sel) .check .box, .card:not(.sel) .check .box { font-variation-setti
 .picker-path .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .picker-new { display: flex; gap: 8px; margin: 0 0 8px; }
 .picker-new input { flex: 1; }
+.folder-list button.chosen { background: var(--primary-soft); font-weight: 600; }
+.folder-list button.chosen .ms { color: var(--primary); font-variation-settings: "FILL" 1; }
+.folder-list button small { margin-left: auto; color: var(--muted); font-weight: 400; }
+.picker-made { color: var(--primary); padding: 8px 12px; font-size: 13px; }
