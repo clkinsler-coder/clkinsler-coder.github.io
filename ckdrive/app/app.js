@@ -886,10 +886,20 @@ async function thumbUrl(id) {
     thumbLinks.set(id, link);
   }
   if (!link) { thumbCache.set(id, null); return null; }
-  const r = await fetch(link.replace(/=s\d+$/, "=s400"), { headers: { Authorization: "Bearer " + await getToken() } });
-  const url = r.ok ? URL.createObjectURL(await r.blob()) : null;
+  // Drive's thumbnail links work on their own for a few hours. Fetching them with the sign-in token is refused
+  // by Google's image server in a browser (CORS), so they're shown as plain images instead.
+  const url = link.replace(/=s\d+$/, "=s400");
   thumbCache.set(id, url);
   return url;
+}
+
+/** Shows [url] in [el] once it has loaded; if it fails (an expired link), the file-type icon stays. */
+function showThumb(el, url) {
+  const img = new Image();
+  img.alt = "";
+  img.referrerPolicy = "no-referrer";
+  img.onload = () => { if (el.isConnected) { el.innerHTML = ""; el.append(img); el.classList.add("has-img"); } };
+  img.src = url;
 }
 
 /** Six at a time, so a long list doesn't fire hundreds of requests at once. */
@@ -899,9 +909,8 @@ function queueThumb(el) {
     while (thumbsBusy < 6 && thumbQueue.length) {
       const t = thumbQueue.shift();
       thumbsBusy++;
-      thumbUrl(t.dataset.thumb).then(url => {
-        if (url && t.isConnected) { t.innerHTML = `<img src="${url}" alt="">`; t.classList.add("has-img"); }
-      }).catch(() => { }).finally(() => { thumbsBusy--; pump(); });
+      thumbUrl(t.dataset.thumb).then(url => { if (url && t.isConnected) showThumb(t, url); })
+        .catch(() => { }).finally(() => { thumbsBusy--; pump(); });
     }
   };
   pump();
@@ -1013,19 +1022,15 @@ function openViewer(files, start) {
     try {
       if (kind === "image") {
         const big = f.thumbnailLink ? f.thumbnailLink.replace(/=s\d+$/, "=s2400") : null;
-        if (big) {
-          // Drive's large preview first (quick), then the real file if the browser can draw it.
-          const r = await fetch(big, { headers: { Authorization: "Bearer " + await getToken() } });
-          if (r.ok && mine === i && !aborted) {
-            const u = URL.createObjectURL(await r.blob()); urls.push(u);
-            body.innerHTML = `<img class="vimg" src="${u}" alt="">`;
-          }
-        }
+        // Drive's large preview first (quick, a plain image link), then the real file if the browser can draw it.
+        if (big) body.innerHTML = `<img class="vimg" src="${esc(big)}" alt="" referrerpolicy="no-referrer">`;
         if (WEB_IMAGES.test(f.mimeType) && Number(f.size || 0) < 60e6) {
-          const u = URL.createObjectURL(await fetchBlob(f));
-          if (mine !== i || aborted) return URL.revokeObjectURL(u);
-          urls.push(u);
-          body.innerHTML = `<img class="vimg" src="${u}" alt="">`;
+          try {
+            const u = URL.createObjectURL(await fetchBlob(f));
+            if (mine !== i || aborted) return URL.revokeObjectURL(u);
+            urls.push(u);
+            body.innerHTML = `<img class="vimg" src="${u}" alt="">`;
+          } catch (e) { if (!big) throw e; } // keep the preview if the full photo couldn't be fetched
         } else if (!big) throw new Error("This kind of photo can't be shown here");
         zoomable($(".vimg", body));
       } else if (kind === "pdf") {

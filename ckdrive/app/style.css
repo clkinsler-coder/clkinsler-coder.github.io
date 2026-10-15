@@ -324,3 +324,7 @@ tr.row:hover .check > .lt, .card:hover .check > .lt, .sel .check > .lt, .selecti
 .lasting-row { display: flex; gap: 8px; }
 .lasting-row input { flex: 1; font: inherit; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
 .lasting .fine { color: var(--muted); font-size: 12px; }
+
+/* Buttons on the viewer's dark background */
+#viewer .btn { background: #fff; color: #1f1f1f; border-color: transparent; }
+#viewer .btn:hover { background: #e8eaed; }
