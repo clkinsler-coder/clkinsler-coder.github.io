@@ -1523,7 +1523,7 @@ function renderUploads() {
   const failed = queue.filter(q => q.error).length;
   box.classList.remove("hidden");
   box.innerHTML = `<div class="uh"><span class="t">${active ? `Uploading ${active} item${active === 1 ? "" : "s"}` :
-    failed ? `${failed} upload${failed === 1 ? "" : "s"} failed` : `${queue.length} upload${queue.length === 1 ? "" : "s"} complete`}</span>
+    failed ? `${failed} upload${failed === 1 ? "" : "s"} failed` : `<span class="ms" style="color:var(--ok);vertical-align:-4px">check_circle</span> Uploaded ${queue.length} file${queue.length === 1 ? "" : "s"} to ${esc(queue.at(-1).parent.name)}`}</span>
     ${active ? "" : `<button class="icon-btn" id="up-close" title="Close"><span class="ms">close</span></button>`}</div>
     <div class="ul">${queue.map(q => `<div class="ui">${iconHtml({ mimeType: q.file.type, name: q.name })}<div class="info"><div class="n">${esc(q.name)}</div>
       ${q.error ? `<small class="err">${esc(q.error)}</small>` : q.done ? `<small>Done</small>` :
