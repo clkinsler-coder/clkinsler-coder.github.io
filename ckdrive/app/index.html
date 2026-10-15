@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CK Drive</title>
+  <link rel="icon" href="icon.svg">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,400,0..1,0&display=block">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="signin" class="signin hidden">
+    <img src="icon.svg" alt="" width="72" height="72">
+    <h1>CK Drive</h1>
+    <p>Your Google Drive, with duplicate uploads caught before they happen.</p>
+    <button id="signin-btn" class="btn primary">Sign in with Google</button>
+    <p id="signin-error" class="error"></p>
+  </div>
+
+  <div id="app" class="app hidden">
+    <aside class="side">
+      <div class="brand"><img src="icon.svg" alt="" width="32" height="32"><span>CK Drive</span></div>
+      <div class="new-wrap">
+        <button id="new-btn" class="btn new"><span class="ms">add</span>New</button>
+        <div id="new-menu" class="menu hidden">
+          <button data-new="files"><span class="ms">upload_file</span>Upload files</button>
+          <button data-new="folder-upload"><span class="ms">drive_folder_upload</span>Upload folder</button>
+          <hr>
+          <button data-new="folder"><span class="ms">create_new_folder</span>New folder</button>
+        </div>
+      </div>
+      <nav id="nav">
+        <a data-nav="files"><span class="ms">home_storage</span>My Drive</a>
+        <a data-nav="recent"><span class="ms">schedule</span>Recent</a>
+        <a data-nav="starred"><span class="ms">star</span>Starred</a>
+        <a data-nav="shared"><span class="ms">group</span>Shared with me</a>
+        <a data-nav="duplicates"><span class="ms">content_copy</span>Duplicates<small id="dup-badge"></small></a>
+        <a data-nav="trash"><span class="ms">delete</span>Trash</a>
+      </nav>
+      <div class="storage" id="storage"></div>
+    </aside>
+
+    <main>
+      <header class="top">
+        <button id="menu-toggle" class="icon-btn mobile-only" title="Menu"><span class="ms">menu</span></button>
+        <form id="search" class="search">
+          <span class="ms">search</span>
+          <input id="search-input" type="search" placeholder="Search in Drive" autocomplete="off">
+        </form>
+        <div class="account-wrap">
+          <button id="account-btn" class="avatar" title="Account"></button>
+          <div id="account-menu" class="menu right hidden">
+            <div id="account-info" class="account-info"></div>
+            <hr>
+            <button id="signout-btn"><span class="ms">logout</span>Sign out</button>
+          </div>
+        </div>
+      </header>
+
+      <div class="toolbar">
+        <div id="crumbs" class="crumbs"></div>
+        <div class="tools">
+          <select id="sort" title="Sort">
+            <option value="name">Name</option>
+            <option value="modified">Last modified</option>
+            <option value="size">Size</option>
+          </select>
+          <button id="view-toggle" class="icon-btn" title="Grid / list"><span class="ms">grid_view</span></button>
+          <button id="empty-trash" class="btn hidden">Empty trash</button>
+          <button id="rescan" class="btn hidden"><span class="ms">refresh</span>Rescan everything</button>
+        </div>
+      </div>
+
+      <section id="content" class="content"></section>
+      <div id="drop-hint" class="drop-hint hidden"><span class="ms">cloud_upload</span>Drop files to upload to <b id="drop-folder"></b></div>
+    </main>
+  </div>
+
+  <div id="uploads" class="uploads hidden"></div>
+  <div id="toast" class="toast hidden"></div>
+  <div id="modal-root"></div>
+  <div id="ctx-menu" class="menu hidden"></div>
+
+  <input id="file-input" type="file" multiple hidden>
+  <input id="folder-input" type="file" webkitdirectory hidden>
+
+  <script src="config.js"></script>
+  <script src="md5.js"></script>
+  <script src="https://accounts.google.com/gsi/client" async></script>
+  <script src="app.js"></script>
+</body>
+</html>
