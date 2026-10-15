@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="ckdrive-version" content="202610151024">
+  <meta name="ckdrive-version" content="202610151134">
   <title>CK Drive</title>
   <link rel="icon" href="icon.svg">
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,400,0..1,0&display=block">
-  <link rel="stylesheet" href="style.css?v=202610151024">
+  <link rel="stylesheet" href="style.css?v=202610151134">
 </head>
 <body>
   <div id="signin" class="signin hidden">
@@ -16,6 +16,18 @@
     <p>Your Google Drive, with duplicate uploads caught before they happen.</p>
     <button id="signin-btn" class="btn primary">Sign in with Google</button>
     <p id="signin-error" class="error"></p>
+    <div id="lasting" class="lasting hidden">
+      <h2>Stay signed in on this PC</h2>
+      <p>One-time setup, so CK Drive never asks you to sign in again here (like Drive for desktop):</p>
+      <ol>
+        <li>Open <a href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener">Google Cloud → Clients</a> and click <b>CK Drive Web</b>.</li>
+        <li>Under <b>Client secrets</b>, click <b>Add secret</b> and copy the new secret (it starts with <code>GOCSPX-</code>).</li>
+        <li>Paste it here and click Save, then sign in.</li>
+      </ol>
+      <div class="lasting-row"><input id="lasting-secret" type="password" placeholder="GOCSPX-…" autocomplete="off"><button id="lasting-save" class="btn primary">Save</button></div>
+      <p id="lasting-error" class="error"></p>
+      <p class="fine">It's kept on this PC only, encrypted for your Windows account, and only ever sent to Google.</p>
+    </div>
   </div>
 
   <div id="app" class="app hidden">
@@ -90,9 +102,9 @@
   <input id="folder-input" type="file" webkitdirectory hidden>
   <input id="camera-input" type="file" accept="image/*,video/*" capture="environment" hidden>
 
-  <script src="config.js?v=202610151024"></script>
-  <script src="md5.js?v=202610151024"></script>
+  <script src="config.js?v=202610151134"></script>
+  <script src="md5.js?v=202610151134"></script>
   <script src="https://accounts.google.com/gsi/client" async></script>
-  <script src="app.js?v=202610151024"></script>
+  <script src="app.js?v=202610151134"></script>
 </body>
 </html>

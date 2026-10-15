@@ -19,9 +19,29 @@ const store = {
 
 let token = null, tokenExpires = 0, tokenClient = null, tokenWaiters = [];
 
+// Running from the CK Drive Windows app (localhost): it can keep a lasting sign-in, so windows never ask again.
+const LAUNCHER = location.hostname === "localhost";
+let lasting = false; // signed in through the Windows app
+
+async function launcher(path, opts = {}) {
+  const r = await fetch(path, { method: opts.method || "GET", body: opts.body, headers: { "X-CKDrive": "1" }, cache: "no-store" });
+  let j = {};
+  try { j = await r.json(); } catch { }
+  if (!r.ok) { const e = new Error(j.error || "CK Drive app error " + r.status); e.code = r.status; throw e; }
+  return j;
+}
+
+async function launcherToken() {
+  const t = await launcher("/auth/token");
+  token = t.access_token;
+  tokenExpires = Date.now() + Math.max(60, t.expires_in) * 1000;
+  return token;
+}
+
 function loadSavedToken() {
   try {
-    const t = JSON.parse(sessionStorage.getItem("ckdrive.token") || "null");
+    // localStorage, not sessionStorage: a new window shares the sign-in (until Google's hour is up).
+    const t = JSON.parse(localStorage.getItem("ckdrive.token") || "null");
     if (t && t.exp > Date.now() + 60000) { token = t.token; tokenExpires = t.exp; }
   } catch { }
 }
@@ -40,7 +60,7 @@ function initGoogle() {
       if (r.error) { waiters.forEach(w => w.reject(new Error(r.error_description || r.error))); return; }
       token = r.access_token;
       tokenExpires = Date.now() + (Number(r.expires_in) || 3600) * 1000;
-      try { sessionStorage.setItem("ckdrive.token", JSON.stringify({ token, exp: tokenExpires })); } catch { }
+      try { localStorage.setItem("ckdrive.token", JSON.stringify({ token, exp: tokenExpires })); } catch { }
       store.set("signedIn", true);
       waiters.forEach(w => w.resolve(token));
     },
@@ -75,13 +95,62 @@ function showReconnect() {
 async function getToken() {
   if (token && tokenExpires > Date.now() + 60000) return token;
   token = null;
+  if (lasting) {
+    try { return await launcherToken(); } catch (e) {
+      if (e.code !== 401) throw e;
+      lasting = false; // access was removed in the Google account: sign in again
+    }
+  }
   return requestToken("");
 }
 
-function signOut() {
-  if (token) google.accounts.oauth2.revoke(token, () => { });
+/** Google's code flow: the Windows app turns the code into a lasting sign-in. */
+function lastingSignIn() {
+  return new Promise((resolve, reject) => {
+    const client = google.accounts.oauth2.initCodeClient({
+      client_id: window.CKDRIVE_CLIENT_ID,
+      scope: SCOPE,
+      ux_mode: "popup",
+      select_account: true,
+      callback: async r => {
+        if (r.error) { reject(new Error(r.error_description || r.error)); return; }
+        try {
+          const t = await launcher("/auth/code", { method: "POST", body: r.code });
+          token = t.access_token; tokenExpires = Date.now() + t.expires_in * 1000;
+          lasting = true; store.set("signedIn", true);
+          resolve();
+        } catch (e) { reject(e); }
+      },
+      error_callback: e => reject(new Error(e.message || e.type || "Sign-in was closed")),
+    });
+    client.requestCode();
+  });
+}
+
+/** On the Windows app's sign-in screen: the one-time "stay signed in" setup, until a secret is saved. */
+async function showLastingSetup() {
+  let st;
+  try { st = await launcher("/auth/status"); } catch { return; }
+  const box = $("#lasting");
+  if (st.secret) { box.classList.add("hidden"); $("#signin-btn").textContent = "Sign in with Google"; return; }
+  box.classList.remove("hidden");
+  $("#lasting-save").onclick = async () => {
+    $("#lasting-error").textContent = "";
+    try {
+      await launcher("/auth/secret", { method: "POST", body: $("#lasting-secret").value.trim() });
+      $("#lasting-secret").value = "";
+      box.classList.add("hidden");
+      $("#signin-btn").textContent = "Sign in with Google";
+      $("#signin-error").textContent = "";
+    } catch (e) { $("#lasting-error").textContent = e.message; }
+  };
+}
+
+async function signOut() {
+  if (lasting) { try { await launcher("/auth/signout", { method: "POST" }); } catch { } lasting = false; }
+  else if (token) google.accounts.oauth2.revoke(token, () => { });
   token = null;
-  sessionStorage.removeItem("ckdrive.token");
+  localStorage.removeItem("ckdrive.token");
   store.set("signedIn", false);
   const r = indexedDB.deleteDatabase("ckdrive");
   r.onsuccess = r.onerror = r.onblocked = () => location.reload();
@@ -681,18 +750,17 @@ function renderList() {
   if (state.grid && !trash) {
     c.innerHTML = `<div class="grid">${state.items.map(f => `
       <div class="card ${state.sel.has(f.id) ? "sel" : ""}" data-id="${esc(f.id)}">
-        <div class="head"><button class="check" data-check title="Select">${iconHtml(f)}<span class="ms box">check_circle</span></button>
+        <div class="head"><button class="check" data-check title="Select"><span class="lt">${iconHtml(f)}</span><span class="ms box">check_circle</span></button>
           <span class="n" title="${esc(f.name)}">${esc(f.name)}</span>
           <button class="icon-btn" data-more title="More"><span class="ms">more_vert</span></button></div>
-        <div class="thumb" ${f.thumbnailLink && !isNative(f) ? `data-thumb="${esc(f.id)}"` : ""}>${iconHtml(f)}</div>
+        <div class="thumb" ${f.thumbnailLink ? `data-thumb="${esc(f.id)}"` : ""}>${iconHtml(f)}</div>
       </div>`).join("")}</div>`;
-    loadThumbs(c);
   } else {
     c.innerHTML = `<table class="files"><thead><tr><th>Name</th><th class="col-owner">Owner</th>
       <th class="col-mod">${trash ? "Trashed from" : "Last modified"}</th><th class="col-size">Size</th><th class="col-act"></th></tr></thead>
       <tbody>${state.items.map(f => `
       <tr class="row ${state.sel.has(f.id) ? "sel" : ""}" data-id="${esc(f.id)}">
-        <td><div class="name-cell"><button class="check" data-check title="Select">${iconHtml(f)}<span class="ms box">check_box</span></button>
+        <td><div class="name-cell"><button class="check" data-check title="Select"><span class="lt" ${f.thumbnailLink ? `data-thumb="${esc(f.id)}"` : ""}>${iconHtml(f)}</span><span class="ms box">check_box</span></button>
           <span class="n" title="${esc(f.name)}">${esc(f.name)}</span>
           ${f.shared ? `<span class="ms tag" title="Shared">group</span>` : ""}${f.starred ? `<span class="ms tag" title="Starred">star</span>` : ""}</div></td>
         <td class="c-owner">${f.ownedByMe ? "me" : esc(f.owners?.[0]?.displayName || "")}</td>
@@ -706,6 +774,7 @@ function renderList() {
     const io = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) { io.disconnect(); loadMore(); } });
     io.observe($("#more"));
   }
+  loadThumbs(c);
   renderSelection();
 }
 
@@ -802,24 +871,47 @@ async function selectionAction(act) {
   }
 }
 
-const thumbCache = new Map();
+// Drive's own thumbnails (photos, videos, PDFs, Docs…), fetched with the sign-in token as rows scroll into view.
+const thumbCache = new Map();     // id -> blob URL, or null for "has none"
+const thumbLinks = new Map();     // id -> thumbnailLink, for files not in the current list
+let thumbsBusy = 0;
+const thumbQueue = [];
+
+async function thumbUrl(id) {
+  if (thumbCache.has(id)) return thumbCache.get(id);
+  let link = state.items.find(x => x.id === id)?.thumbnailLink || thumbLinks.get(id);
+  if (link === undefined) {
+    // Not in the list (the Duplicates page): ask Drive for it.
+    try { link = (await call(`/files/${encodeURIComponent(id)}?fields=thumbnailLink`)).thumbnailLink || null; } catch { link = null; }
+    thumbLinks.set(id, link);
+  }
+  if (!link) { thumbCache.set(id, null); return null; }
+  const r = await fetch(link.replace(/=s\d+$/, "=s400"), { headers: { Authorization: "Bearer " + await getToken() } });
+  const url = r.ok ? URL.createObjectURL(await r.blob()) : null;
+  thumbCache.set(id, url);
+  return url;
+}
+
+/** Six at a time, so a long list doesn't fire hundreds of requests at once. */
+function queueThumb(el) {
+  thumbQueue.push(el);
+  const pump = async () => {
+    while (thumbsBusy < 6 && thumbQueue.length) {
+      const t = thumbQueue.shift();
+      thumbsBusy++;
+      thumbUrl(t.dataset.thumb).then(url => {
+        if (url && t.isConnected) { t.innerHTML = `<img src="${url}" alt="">`; t.classList.add("has-img"); }
+      }).catch(() => { }).finally(() => { thumbsBusy--; pump(); });
+    }
+  };
+  pump();
+}
+
 function loadThumbs(root) {
-  const io = new IntersectionObserver(es => es.forEach(async e => {
+  const io = new IntersectionObserver(es => es.forEach(e => {
     if (!e.isIntersecting) return;
     io.unobserve(e.target);
-    const id = e.target.dataset.thumb;
-    const f = state.items.find(x => x.id === id);
-    if (!f) return;
-    try {
-      let url = thumbCache.get(id);
-      if (!url) {
-        const r = await fetch(f.thumbnailLink.replace(/=s\d+$/, "=s400"), { headers: { Authorization: "Bearer " + await getToken() } });
-        if (!r.ok) return;
-        url = URL.createObjectURL(await r.blob());
-        thumbCache.set(id, url);
-      }
-      e.target.innerHTML = `<img src="${url}" alt="">`;
-    } catch { }
+    queueThumb(e.target);
   }), { rootMargin: "200px" });
   root.querySelectorAll("[data-thumb]").forEach(el => io.observe(el));
 }
@@ -1292,7 +1384,10 @@ async function startUpload(files, parent = currentFolder()) {
       else if (index.state !== "ready") detail = "Not checked against Drive yet · " + fmtSize(c.size);
       else detail = "New · " + fmtSize(c.size);
       const icon = c.dup ? "warning" : index.state === "ready" ? "check_circle" : "help";
-      row.innerHTML = `<span class="ms ${c.dup ? "bad" : "good"}">${icon}</span>
+      // A preview of the photo itself (from this computer, nothing is uploaded for it).
+      if (c.file.type.startsWith("image/") && !c.preview && c.file.size < 40e6) c.preview = URL.createObjectURL(c.file);
+      row.innerHTML = `<span class="ms ${c.dup ? "bad" : "good"}">${icon}</span>` +
+        (c.preview ? `<img class="cthumb" src="${c.preview}" alt="">` : "") + `
         <div class="info"><div class="n">${esc((c.path ? c.path + "/" : "") + c.name)}</div><small title="${esc(detail)}">${esc(detail)}</small></div>`;
       if (c.dup) {
         const l = document.createElement("label");
@@ -1429,12 +1524,13 @@ function renderDuplicates() {
     groups.map(g => {
       const k = keep.get(g.key) || g.copies[0].id;
       return `<div class="group" data-key="${esc(g.key)}">
-        <div class="gh"><span class="ms">content_copy</span>${g.copies.length} copies · ${fmtSize(g.size)} each</div>
+        <div class="gh"><span class="gthumb" data-thumb="${esc(g.copies[0].id)}"><span class="ms">content_copy</span></span>${g.copies.length} copies · ${fmtSize(g.size)} each</div>
         ${g.copies.map(e => `<label class="copy"><input type="radio" name="k-${esc(g.key)}" value="${esc(e.id)}" ${e.id === k ? "checked" : ""}>
           <div class="info">${esc(e.name)}<small>${esc(index.path(e.parents))} · ${fmtWhen(e.modified)}</small></div>
           ${e.id === k ? `<span class="keep">KEEP</span>` : ""}</label>`).join("")}
         <div class="ga"><button class="btn" data-trash="${esc(g.key)}">Trash ${g.copies.length - 1} extra</button></div></div>`;
     }).join("");
+  loadThumbs(c);
   c.querySelectorAll(".group input[type=radio]").forEach(r => r.onchange = () => {
     keep.set(r.closest(".group").dataset.key, r.value); renderDuplicates();
   });
@@ -1529,7 +1625,13 @@ function watchForUpdates() {
 function wire() {
   $("#signin-btn").onclick = async () => {
     $("#signin-error").textContent = "";
-    try { await requestToken("select_account"); startApp(); }
+    try {
+      // In the Windows app, once the secret is saved: a lasting sign-in. Otherwise Google's hour-long one.
+      let st = null;
+      if (LAUNCHER) try { st = await launcher("/auth/status"); } catch { }
+      if (st && st.secret) await lastingSignIn(); else await requestToken("select_account");
+      startApp();
+    }
     catch (e) { $("#signin-error").textContent = "Couldn't sign in: " + e.message; }
   };
   $("#signout-btn").onclick = signOut;
@@ -1682,13 +1784,18 @@ function wire() {
 window.addEventListener("load", () => {
   wire();
   loadSavedToken();
-  const ready = () => {
+  const ready = async () => {
     initGoogle();
     if (!window.CKDRIVE_CLIENT_ID) return;
+    if (LAUNCHER) {
+      // Already signed in on this PC: straight in, no Google window at all.
+      try { await launcherToken(); lasting = true; startApp(); return; } catch { }
+    }
     if (token) startApp();
     else {
       showSignIn();
       if (store.get("signedIn", false)) $("#signin-btn").textContent = "Continue with Google";
+      if (LAUNCHER) showLastingSetup();
     }
   };
   if (window.google?.accounts) ready();
