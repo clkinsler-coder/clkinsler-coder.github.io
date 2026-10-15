@@ -298,3 +298,6 @@ tr.row:not(.sel) .check .box, .card:not(.sel) .check .box { font-variation-setti
 /* Only on phones and tablets (the camera button) */
 .touch-only { display: none !important; }
 @media (pointer: coarse) { .touch-only { display: flex !important; } }
+.picker-path .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-new { display: flex; gap: 8px; margin: 0 0 8px; }
+.picker-new input { flex: 1; }

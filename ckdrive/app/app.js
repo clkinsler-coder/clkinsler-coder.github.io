@@ -99,7 +99,18 @@ async function call(url, opts = {}, retried = false) {
   // Shared drives: every file call has to say it understands them.
   if (url.includes("/files") && !url.includes("/files/trash") && !url.includes("supportsAllDrives"))
     url += (url.includes("?") ? "&" : "?") + "supportsAllDrives=true";
-  const r = await fetch(url.startsWith("http") ? url : API + url, { method: opts.method || "GET", headers, body });
+  // A dropped connection, or Google saying "busy": wait and try again (1 s, 2 s, 4 s) before giving up.
+  let r;
+  for (let tries = 0; ; tries++) {
+    try {
+      r = await fetch(url.startsWith("http") ? url : API + url, { method: opts.method || "GET", headers, body });
+      if ((r.status === 429 || r.status >= 500) && tries < 3) { await new Promise(res => setTimeout(res, 1000 << tries)); continue; }
+      break;
+    } catch (e) {
+      if (tries >= 3) throw new Error("Can't reach Google. Check the internet connection");
+      await new Promise(res => setTimeout(res, 1000 << tries));
+    }
+  }
   if (r.status === 401 && !retried) { token = null; return call(url, opts, true); }
   if (!r.ok) {
     let msg = "Drive error " + r.status;
@@ -432,13 +443,34 @@ function pickFolder(title, confirm, exclude) {
   return new Promise(res => {
     let trail = [ROOT], done = false;
     const wrap = document.createElement("div");
-    wrap.innerHTML = `<div class="picker-path"></div><div class="folder-list"></div>`;
+    wrap.innerHTML = `<div class="picker-path"></div>
+      <div class="picker-new hidden"><input type="text" placeholder="Folder name" value="Untitled folder"><button class="btn primary">Create</button></div>
+      <div class="folder-list"></div>`;
+    // New folder: made inside the folder being shown, then opened, so the confirm button picks it.
+    const newRow = $(".picker-new", wrap), newName = $("input", newRow);
+    const create = async () => {
+      const name = newName.value.trim();
+      if (!name) return;
+      try {
+        const f = await drive.folder(name, trail.at(-1).id);
+        newRow.classList.add("hidden");
+        trail = [...trail, { id: f.id, name: f.name }];
+        draw();
+      } catch (e) { toast("Couldn't make the folder: " + e.message); }
+    };
+    $("button", newRow).onclick = create;
+    newName.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); create(); } });
     const draw = async () => {
       const path = $(".picker-path", wrap);
       path.innerHTML = (trail.length > 1 ? `<button class="icon-btn" data-up title="Up"><span class="ms">arrow_back</span></button>` : "") +
-        esc(trail.map(t => t.name).join(" / "));
+        `<span class="grow">${esc(trail.map(t => t.name).join(" / "))}</span>` +
+        `<button class="icon-btn" data-new-folder title="New folder here"><span class="ms">create_new_folder</span></button>`;
       const up = $("[data-up]", path);
       if (up) up.onclick = () => { trail = trail.slice(0, -1); draw(); };
+      $("[data-new-folder]", path).onclick = () => {
+        newRow.classList.toggle("hidden");
+        if (!newRow.classList.contains("hidden")) { newName.value = "Untitled folder"; newName.focus(); newName.select(); }
+      };
       const list = $(".folder-list", wrap);
       list.innerHTML = `<div class="empty" style="padding:40px">Loading…</div>`;
       try {
@@ -1205,9 +1237,14 @@ async function startUpload(files, parent = currentFolder()) {
   };
   index.listeners.add(showScan);
   showScan();
-  try { await index.sync(); } catch (e) {
-    note = index.state === "ready" ? "Couldn't refresh the duplicate list; using the last one." : "Couldn't check Drive for duplicates (" + e.message + ").";
-  } finally { index.listeners.delete(showScan); }
+  const syncNote = async () => {
+    try { await index.sync(); return null; } catch (e) {
+      return index.state === "ready"
+        ? "No connection to Google right now, so files added elsewhere in the last few minutes may not be caught yet. Checking again automatically…"
+        : "No connection to Google right now, so these haven't been checked for duplicates yet. Checking again automatically…";
+    }
+  };
+  try { note = await syncNote(); } finally { index.listeners.delete(showScan); }
   const seen = new Map();
   cands = [];
   for (const { file, path } of files) {
@@ -1215,14 +1252,25 @@ async function startUpload(files, parent = currentFolder()) {
     status.innerHTML = `<div class="note">Fingerprinting ${esc(file.name)}…</div><div class="progress"><i style="width:0"></i></div>`;
     const bar = $(".progress > i", status);
     const md5 = await md5File(file, n => bar.style.width = (file.size ? n / file.size * 100 : 100) + "%");
-    const inDrive = index.matches(md5, file.size);
-    const sameAs = seen.get(md5 + ":" + file.size) || null;
-    if (!sameAs) seen.set(md5 + ":" + file.size, file.name);
-    cands.push({ file, path: path || "", name: file.name, md5, size: file.size, inDrive, sameAs, dup: inDrive.length > 0 || !!sameAs });
+    cands.push({ file, path: path || "", name: file.name, md5, size: file.size });
   }
-  const dups = cands.filter(c => c.dup).length;
-  status.innerHTML = (note ? `<div class="note warn">${esc(note)}</div>` : "") +
-    (dups ? `<div class="note warn"><b>${dups} already in your Drive.</b> They'll be skipped unless you switch them on.</div>` : `<div class="note">None of these are in your Drive yet.</div>`);
+  /** Compares every picked file with the Drive list (again, after a connection problem clears). */
+  const evaluate = () => {
+    seen.clear();
+    cands.forEach(c => {
+      const k = c.md5 + ":" + c.size;
+      c.inDrive = index.matches(c.md5, c.size);
+      c.sameAs = seen.get(k) || null;
+      if (!c.sameAs) seen.set(k, c.name);
+      c.dup = c.inDrive.length > 0 || !!c.sameAs;
+    });
+    const dups = cands.filter(c => c.dup).length;
+    const checked = index.state === "ready";
+    status.innerHTML = (note ? `<div class="note warn">${esc(note)}</div>` : "") +
+      (dups ? `<div class="note warn"><b>${dups} already in your Drive.</b> They'll be skipped unless you switch them on.</div>`
+        : checked ? `<div class="note">None of these are in your Drive yet.</div>` : "");
+    draw(); refresh();
+  };
   const draw = () => {
     list.innerHTML = "";
     cands.forEach(c => {
@@ -1233,8 +1281,10 @@ async function startUpload(files, parent = currentFolder()) {
         const e = c.inDrive[0];
         detail = `Already in Drive: ${index.path(e.parents)} / ${e.name}` + (c.inDrive.length > 1 ? ` (+${c.inDrive.length - 1} more)` : "");
       } else if (c.sameAs) detail = `Same file as ${c.sameAs}, also in this upload`;
+      else if (index.state !== "ready") detail = "Not checked against Drive yet · " + fmtSize(c.size);
       else detail = "New · " + fmtSize(c.size);
-      row.innerHTML = `<span class="ms ${c.dup ? "bad" : "good"}">${c.dup ? "warning" : "check_circle"}</span>
+      const icon = c.dup ? "warning" : index.state === "ready" ? "check_circle" : "help";
+      row.innerHTML = `<span class="ms ${c.dup ? "bad" : "good"}">${icon}</span>
         <div class="info"><div class="n">${esc((c.path ? c.path + "/" : "") + c.name)}</div><small title="${esc(detail)}">${esc(detail)}</small></div>`;
       if (c.dup) {
         const l = document.createElement("label");
@@ -1252,7 +1302,14 @@ async function startUpload(files, parent = currentFolder()) {
     upBtn.textContent = n ? "Upload" : "Done";
     upBtn.disabled = false;
   };
-  draw(); refresh();
+  evaluate();
+  // Keep trying while the window is open (3 s, 6 s, 12 s… up to every 30 s).
+  for (let wait = 3000; note && !cancelled; wait = Math.min(wait * 2, 30000)) {
+    await new Promise(res => setTimeout(res, wait));
+    if (cancelled) return;
+    note = await syncNote();
+    evaluate();
+  }
 }
 
 const folderCache = new Map();
