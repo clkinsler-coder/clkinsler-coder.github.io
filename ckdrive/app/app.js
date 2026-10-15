@@ -466,6 +466,8 @@ const state = {
   grid: store.get("grid", false),
   account: null,
   seq: 0,
+  sel: new Set(),       // selected file ids
+  anchor: null,         // last clicked id, for shift-click ranges
 };
 
 const SORTS = { name: "folder,name_natural", modified: "folder,modifiedTime desc", size: "folder,quotaBytesUsed desc" };
@@ -514,6 +516,7 @@ window.addEventListener("popstate", e => {
 
 async function load() {
   const seq = ++state.seq;
+  state.sel.clear(); state.anchor = null;
   renderChrome();
   if (state.view === "duplicates") { renderDuplicates(); guard("Couldn't check Drive", () => index.sync()); return; }
   state.items = []; state.next = null; state.loading = true; state.error = null;
@@ -551,7 +554,10 @@ function reloadQuiet() {
   const [q, order] = queryFor();
   drive.list(q, order).then(r => {
     if (seq !== state.seq) return;
-    state.items = r.files || []; state.next = r.nextPageToken || null; renderList();
+    state.items = r.files || []; state.next = r.nextPageToken || null;
+    const ids = new Set(state.items.map(f => f.id));
+    [...state.sel].forEach(id => { if (!ids.has(id)) state.sel.delete(id); });
+    renderList();
   }).catch(() => { });
 }
 
@@ -612,8 +618,9 @@ function renderList() {
   const trash = state.view === "trash";
   if (state.grid && !trash) {
     c.innerHTML = `<div class="grid">${state.items.map(f => `
-      <div class="card" data-id="${esc(f.id)}">
-        <div class="head">${iconHtml(f)}<span class="n" title="${esc(f.name)}">${esc(f.name)}</span>
+      <div class="card ${state.sel.has(f.id) ? "sel" : ""}" data-id="${esc(f.id)}">
+        <div class="head"><button class="check" data-check title="Select">${iconHtml(f)}<span class="ms box">check_circle</span></button>
+          <span class="n" title="${esc(f.name)}">${esc(f.name)}</span>
           <button class="icon-btn" data-more title="More"><span class="ms">more_vert</span></button></div>
         <div class="thumb" ${f.thumbnailLink && !isNative(f) ? `data-thumb="${esc(f.id)}"` : ""}>${iconHtml(f)}</div>
       </div>`).join("")}</div>`;
@@ -622,8 +629,9 @@ function renderList() {
     c.innerHTML = `<table class="files"><thead><tr><th>Name</th><th class="col-owner">Owner</th>
       <th class="col-mod">${trash ? "Trashed from" : "Last modified"}</th><th class="col-size">Size</th><th class="col-act"></th></tr></thead>
       <tbody>${state.items.map(f => `
-      <tr class="row" data-id="${esc(f.id)}">
-        <td><div class="name-cell">${iconHtml(f)}<span class="n" title="${esc(f.name)}">${esc(f.name)}</span>
+      <tr class="row ${state.sel.has(f.id) ? "sel" : ""}" data-id="${esc(f.id)}">
+        <td><div class="name-cell"><button class="check" data-check title="Select">${iconHtml(f)}<span class="ms box">check_box</span></button>
+          <span class="n" title="${esc(f.name)}">${esc(f.name)}</span>
           ${f.shared ? `<span class="ms tag" title="Shared">group</span>` : ""}${f.starred ? `<span class="ms tag" title="Starred">star</span>` : ""}</div></td>
         <td class="c-owner">${f.ownedByMe ? "me" : esc(f.owners?.[0]?.displayName || "")}</td>
         <td>${fmtWhen(f.modifiedTime)}</td>
@@ -635,6 +643,100 @@ function renderList() {
     c.insertAdjacentHTML("beforeend", `<div class="empty" id="more" style="padding:24px">Loading more…</div>`);
     const io = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) { io.disconnect(); loadMore(); } });
     io.observe($("#more"));
+  }
+  renderSelection();
+}
+
+// ---------- Selecting several files ----------
+
+/** Updates row highlights and the selection bar without redrawing the list. */
+function renderSelection() {
+  document.querySelectorAll("#content [data-id]").forEach(el => {
+    const on = state.sel.has(el.dataset.id);
+    el.classList.toggle("sel", on);
+    const box = el.querySelector(".check .box");
+    if (box) box.textContent = el.tagName === "TR" ? (on ? "check_box" : "check_box_outline_blank") : (on ? "check_circle" : "radio_button_unchecked");
+  });
+  $("#content").classList.toggle("selecting", state.sel.size > 0);
+  const bar = $("#selbar");
+  if (!state.sel.size || state.view === "duplicates") { bar.classList.add("hidden"); $("#crumbs").classList.remove("hidden"); return; }
+  $("#crumbs").classList.add("hidden");
+  bar.classList.remove("hidden");
+  const files = selectedFiles();
+  const trash = state.view === "trash";
+  const mine = files.every(f => f.ownedByMe);
+  const allStarred = files.every(f => f.starred);
+  const btn = (icon, title, act, show = true) => show ? `<button class="icon-btn" data-sel="${act}" title="${title}"><span class="ms">${icon}</span></button>` : "";
+  bar.innerHTML = `<button class="icon-btn" data-sel="clear" title="Clear selection (Esc)"><span class="ms">close</span></button>
+    <span class="count">${state.sel.size} selected</span>` + (trash
+      ? btn("restore_from_trash", "Restore", "restore") + btn("delete_forever", "Delete forever", "delete")
+      : btn("download", "Download", "download", files.some(f => f.mimeType !== FOLDER)) +
+        btn("drive_file_move", "Move", "move", mine) +
+        btn(allStarred ? "star" : "star_outline", allStarred ? "Remove from starred" : "Add to starred", "star") +
+        btn("delete", "Move to trash (Delete)", "trash", mine)) +
+    btn("select_all", "Select all (Ctrl+A)", "all");
+}
+
+const selectedFiles = () => state.items.filter(f => state.sel.has(f.id));
+
+function clickSelect(f, e) {
+  const ids = state.items.map(x => x.id);
+  if (e.shiftKey && state.anchor && ids.includes(state.anchor)) {
+    const [a, b] = [ids.indexOf(state.anchor), ids.indexOf(f.id)].sort((x, y) => x - y);
+    if (!(e.ctrlKey || e.metaKey)) state.sel.clear();
+    ids.slice(a, b + 1).forEach(id => state.sel.add(id));
+  } else if (e.ctrlKey || e.metaKey || e.toggle) {
+    state.sel.has(f.id) ? state.sel.delete(f.id) : state.sel.add(f.id);
+    state.anchor = f.id;
+  } else {
+    state.sel.clear(); state.sel.add(f.id); state.anchor = f.id;
+  }
+  renderSelection();
+}
+
+/** Runs [each] on every selected file, then reports how many worked. */
+async function bulk(verb, files, each, after) {
+  state.sel.clear(); renderSelection();
+  let ok = 0;
+  for (const f of files) { try { await each(f); ok++; } catch (e) { console.warn(verb, f.name, e); } }
+  const failed = files.length - ok;
+  toast(`${verb} ${ok} item${ok === 1 ? "" : "s"}` + (failed ? ` · ${failed} failed` : ""));
+  renderList();
+  if (after) after();
+}
+
+async function selectionAction(act) {
+  const files = selectedFiles();
+  if (act === "clear") { state.sel.clear(); renderSelection(); return; }
+  if (act === "all") { state.items.forEach(f => state.sel.add(f.id)); renderSelection(); return; }
+  if (!files.length) return;
+  if (act === "trash") return bulk("Moved to trash:", files, async f => {
+    await drive.patch(f.id, { trashed: true }); state.items = state.items.filter(x => x.id !== f.id); index.files.delete(f.id);
+  }, () => index.save());
+  if (act === "restore") return bulk("Restored", files, async f => {
+    await drive.patch(f.id, { trashed: false }); state.items = state.items.filter(x => x.id !== f.id);
+  }, () => index.sync().catch(() => { }));
+  if (act === "delete") {
+    if (!await confirmBox(`Delete ${files.length} forever?`, "They'll be deleted forever. This can't be undone.", "Delete forever")) return;
+    return bulk("Deleted forever:", files, async f => { await drive.deleteForever(f.id); state.items = state.items.filter(x => x.id !== f.id); });
+  }
+  if (act === "star") {
+    const star = !files.every(f => f.starred);
+    return bulk(star ? "Starred" : "Unstarred", files, async f => {
+      const u = await drive.patch(f.id, { starred: star });
+      state.items = state.items.map(x => x.id === u.id ? u : x);
+    }, () => { if (state.view === "starred" && !state.trail.length) reloadQuiet(); });
+  }
+  if (act === "move") {
+    const to = await pickFolder(`Move ${files.length} item${files.length === 1 ? "" : "s"}`, "Move here");
+    if (!to) return;
+    return bulk(`Moved to ${to.name}:`, files, async f => {
+      await drive.patch(f.id, {}, { addParents: to.id, removeParents: (f.parents || []).join(",") || undefined });
+    }, () => { reloadQuiet(); index.sync().catch(() => { }); });
+  }
+  if (act === "download") {
+    const list = files.filter(f => f.mimeType !== FOLDER);
+    return bulk("Downloaded", list, f => download(f));
   }
 }
 
@@ -693,7 +795,170 @@ function openItem(f) {
       { trail: state.view === "search" || state.view === "recent" ? [ROOT, { id: f.id, name: f.name }] : [...state.trail, { id: f.id, name: f.name }] });
     return;
   }
+  if (viewKind(f)) {
+    // Arrow through the photos, videos and PDFs in the same list.
+    const list = state.items.filter(viewKind);
+    openViewer(list, Math.max(0, list.findIndex(x => x.id === f.id)));
+    return;
+  }
   window.open(linkFor(f), "_blank", "noopener");
+}
+
+// ---------- Built-in viewer ----------
+
+/** What CK Drive shows itself: image, video, audio or pdf (anything else opens in Drive). */
+function viewKind(f) {
+  const m = f.mimeType || "";
+  if (m === FOLDER || isNative(f)) return null;
+  if (m.startsWith("image/")) return "image";
+  if (m.startsWith("video/")) return "video";
+  if (m.startsWith("audio/")) return "audio";
+  if (m === "application/pdf") return "pdf";
+  return null;
+}
+
+// Types browsers can draw themselves; others (HEIC, RAW…) use Drive's large preview image.
+const WEB_IMAGES = /^image\/(jpeg|png|gif|webp|bmp|svg\+xml|avif|x-icon)$/;
+
+async function fetchBlob(f) {
+  const r = await call(`/files/${encodeURIComponent(f.id)}?alt=media`, { raw: true });
+  return r.blob();
+}
+
+function openViewer(files, start) {
+  let i = start, urls = [], aborted = false;
+  const v = document.createElement("div");
+  v.id = "viewer";
+  v.innerHTML = `
+    <div class="vbar">
+      <button class="icon-btn" data-v="close" title="Close (Esc)"><span class="ms">close</span></button>
+      <div class="vt"><div class="vn"></div><small class="vc"></small></div>
+      <button class="icon-btn" data-v="download" title="Download"><span class="ms">download</span></button>
+      <button class="icon-btn" data-v="drive" title="Open in Google Drive"><span class="ms">open_in_new</span></button>
+      <button class="icon-btn" data-v="more" title="More"><span class="ms">more_vert</span></button>
+    </div>
+    <div class="vbody"></div>
+    <button class="vnav prev" data-v="prev" title="Previous (←)"><span class="ms">chevron_left</span></button>
+    <button class="vnav next" data-v="next" title="Next (→)"><span class="ms">chevron_right</span></button>`;
+  document.body.append(v);
+  const body = $(".vbody", v);
+  const release = () => { urls.forEach(u => URL.revokeObjectURL(u)); urls = []; };
+  const close = () => { aborted = true; release(); v.remove(); document.removeEventListener("keydown", onKey, true); };
+
+  const show = async () => {
+    const f = files[i];
+    release();
+    $(".vn", v).textContent = f.name;
+    $(".vc", v).textContent = files.length > 1 ? `${i + 1} of ${files.length}` : "";
+    $(".prev", v).classList.toggle("hidden", i === 0);
+    $(".next", v).classList.toggle("hidden", i === files.length - 1);
+    body.innerHTML = `<div class="vmsg">Loading…</div>`;
+    const kind = viewKind(f);
+    const mine = i;
+    try {
+      if (kind === "image") {
+        const big = f.thumbnailLink ? f.thumbnailLink.replace(/=s\d+$/, "=s2400") : null;
+        if (big) {
+          // Drive's large preview first (quick), then the real file if the browser can draw it.
+          const r = await fetch(big, { headers: { Authorization: "Bearer " + await getToken() } });
+          if (r.ok && mine === i && !aborted) {
+            const u = URL.createObjectURL(await r.blob()); urls.push(u);
+            body.innerHTML = `<img class="vimg" src="${u}" alt="">`;
+          }
+        }
+        if (WEB_IMAGES.test(f.mimeType) && Number(f.size || 0) < 60e6) {
+          const u = URL.createObjectURL(await fetchBlob(f));
+          if (mine !== i || aborted) return URL.revokeObjectURL(u);
+          urls.push(u);
+          body.innerHTML = `<img class="vimg" src="${u}" alt="">`;
+        } else if (!big) throw new Error("This kind of photo can't be shown here");
+        zoomable($(".vimg", body));
+      } else if (kind === "pdf") {
+        const u = URL.createObjectURL(new Blob([await fetchBlob(f)], { type: "application/pdf" }));
+        if (mine !== i || aborted) return URL.revokeObjectURL(u);
+        urls.push(u);
+        body.innerHTML = `<iframe class="vpdf" src="${u}" title="${esc(f.name)}"></iframe>`;
+      } else if (kind === "audio" && Number(f.size || 0) < 200e6) {
+        const u = URL.createObjectURL(await fetchBlob(f));
+        if (mine !== i || aborted) return URL.revokeObjectURL(u);
+        urls.push(u);
+        body.innerHTML = `<div class="vaudio"><span class="ms">music_note</span><audio src="${u}" controls autoplay></audio></div>`;
+      } else {
+        // Videos stream through Drive's own player (it needs this browser signed in to Google).
+        body.innerHTML = `<iframe class="vframe" src="https://drive.google.com/file/d/${encodeURIComponent(f.id)}/preview" allow="autoplay; fullscreen" allowfullscreen title="${esc(f.name)}"></iframe>`;
+      }
+    } catch (e) {
+      if (mine !== i || aborted) return;
+      body.innerHTML = `<div class="vmsg">${esc(e.message || "Couldn't load this file")}<br><br>
+        <button class="btn" data-v="drive">Open in Google Drive</button></div>`;
+    }
+  };
+
+  const go = d => { const n = i + d; if (n >= 0 && n < files.length) { i = n; show(); } };
+  v.addEventListener("click", e => {
+    const b = e.target.closest("[data-v]");
+    if (!b) return;
+    const f = files[i];
+    const act = b.dataset.v;
+    if (act === "close") close();
+    else if (act === "prev") go(-1);
+    else if (act === "next") go(1);
+    else if (act === "download") guard("Download failed", () => download(f));
+    else if (act === "drive") window.open(linkFor(f), "_blank", "noopener");
+    else if (act === "more") {
+      const r = b.getBoundingClientRect();
+      showMenu(f, r.left, r.bottom, { onTrash: () => { files.splice(i, 1); if (!files.length) close(); else { i = Math.min(i, files.length - 1); show(); } } });
+    }
+  });
+  const onKey = e => {
+    if ($("#modal-root").children.length) return;
+    if (e.key === "Escape") { if (!$("#ctx-menu").classList.contains("hidden")) hideMenus(); else close(); e.stopPropagation(); }
+    else if (e.key === "ArrowLeft") go(-1);
+    else if (e.key === "ArrowRight") go(1);
+  };
+  document.addEventListener("keydown", onKey, true);
+  // Swipe left/right on touch screens.
+  let sx = null;
+  body.addEventListener("touchstart", e => { sx = e.touches.length === 1 ? e.touches[0].clientX : null; }, { passive: true });
+  body.addEventListener("touchend", e => {
+    if (sx == null || body.querySelector(".vimg.zoomed")) return;
+    const dx = e.changedTouches[0].clientX - sx;
+    if (Math.abs(dx) > 60) go(dx < 0 ? 1 : -1);
+    sx = null;
+  });
+  show();
+}
+
+/** Click or double-tap to zoom a photo; drag to look around; mouse wheel zooms too. */
+function zoomable(img) {
+  if (!img) return;
+  let scale = 1, x = 0, y = 0, drag = null;
+  const apply = () => {
+    img.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
+    img.classList.toggle("zoomed", scale > 1);
+  };
+  img.addEventListener("click", e => {
+    if (drag && drag.moved) return;
+    if (scale > 1) { scale = 1; x = y = 0; } else scale = 2.5;
+    apply();
+  });
+  img.addEventListener("wheel", e => {
+    e.preventDefault();
+    scale = Math.min(6, Math.max(1, scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+    if (scale === 1) x = y = 0;
+    apply();
+  }, { passive: false });
+  img.addEventListener("pointerdown", e => {
+    if (scale === 1) return;
+    drag = { sx: e.clientX - x, sy: e.clientY - y, moved: false };
+    img.setPointerCapture(e.pointerId);
+  });
+  img.addEventListener("pointermove", e => {
+    if (!drag) return;
+    x = e.clientX - drag.sx; y = e.clientY - drag.sy; drag.moved = true;
+    apply();
+  });
+  img.addEventListener("pointerup", () => { setTimeout(() => { drag = null; }, 0); });
 }
 
 async function download(f) {
@@ -783,7 +1048,7 @@ function shareDialog(f) {
   draw().catch(e => { err.textContent = e.message; });
 }
 
-function showMenu(f, x, y) {
+function showMenu(f, x, y, opts = {}) {
   const m = $("#ctx-menu");
   const trash = state.view === "trash";
   const items = trash ? [
@@ -793,7 +1058,8 @@ function showMenu(f, x, y) {
       await drive.deleteForever(f.id); dropItem(f.id); toast(f.name + " deleted forever");
     }],
   ] : [
-    ["open_in_new", f.mimeType === FOLDER ? "Open" : "Open in Drive", () => openItem(f)],
+    !opts.onTrash && ["open_in_new", f.mimeType === FOLDER ? "Open" : viewKind(f) ? "Preview" : "Open in Drive", () => openItem(f)],
+    viewKind(f) && ["open_in_new", "Open in Drive", () => window.open(linkFor(f), "_blank", "noopener")],
     f.mimeType !== FOLDER && ["download", "Download", () => download(f)],
     "-",
     ["person_add", "Share", () => shareDialog(f)],
@@ -818,6 +1084,7 @@ function showMenu(f, x, y) {
     "-",
     f.ownedByMe && ["delete", "Move to trash", async () => {
       await drive.patch(f.id, { trashed: true }); dropItem(f.id); index.files.delete(f.id); toast(f.name + " moved to trash");
+      if (opts.onTrash) opts.onTrash();
     }],
   ];
   m.innerHTML = "";
@@ -826,6 +1093,33 @@ function showMenu(f, x, y) {
     const b = document.createElement("button");
     b.innerHTML = `<span class="ms">${it[0]}</span>${esc(it[1])}`;
     b.onclick = () => { hideMenus(); guard(it[1] + " failed", it[2]); };
+    m.append(b);
+  });
+  m.classList.remove("hidden");
+  const r = m.getBoundingClientRect();
+  m.style.left = Math.max(8, Math.min(x, innerWidth - r.width - 8)) + "px";
+  m.style.top = Math.max(8, Math.min(y, innerHeight - r.height - 8)) + "px";
+}
+
+/** Right-click / ⋮ on a file while several are selected. */
+function showBulkMenu(x, y) {
+  const m = $("#ctx-menu");
+  const files = selectedFiles();
+  const trash = state.view === "trash";
+  const mine = files.every(f => f.ownedByMe);
+  const items = trash
+    ? [["restore_from_trash", "Restore", "restore"], ["delete_forever", "Delete forever", "delete"]]
+    : [
+      files.some(f => f.mimeType !== FOLDER) && ["download", "Download", "download"],
+      mine && ["drive_file_move", "Move", "move"],
+      files.every(f => f.starred) ? ["star", "Remove from starred", "star"] : ["star_outline", "Add to starred", "star"],
+      mine && ["delete", "Move to trash", "trash"],
+    ];
+  m.innerHTML = `<div style="padding:6px 16px;color:var(--muted)">${files.length} selected</div>`;
+  items.filter(Boolean).forEach(([icon, label, act]) => {
+    const b = document.createElement("button");
+    b.innerHTML = `<span class="ms">${icon}</span>${esc(label)}`;
+    b.onclick = () => { hideMenus(); guard(label + " failed", () => selectionAction(act)); };
     m.append(b);
   });
   m.classList.remove("hidden");
@@ -1110,24 +1404,60 @@ function wire() {
   });
   content.addEventListener("click", e => {
     const row = e.target.closest("[data-id]");
-    if (!row) return;
+    if (!row) {
+      // A click on empty space clears the selection.
+      if (!e.target.closest("button") && state.sel.size) { state.sel.clear(); renderSelection(); }
+      return;
+    }
     const f = byId(row.dataset.id);
     if (e.target.closest("[data-more]")) {
       e.stopPropagation();
       const r = e.target.closest("[data-more]").getBoundingClientRect();
-      showMenu(f, r.left, r.bottom);
+      if (state.sel.has(f.id) && state.sel.size > 1) showBulkMenu(r.left, r.bottom);
+      else showMenu(f, r.left, r.bottom);
       return;
     }
-    content.querySelectorAll(".sel").forEach(x => x.classList.remove("sel"));
-    row.classList.add("sel");
-    // Folders open on one click on touch screens, like the Drive app.
-    if (matchMedia("(pointer: coarse)").matches && state.view !== "trash") openItem(f);
+    // The tick box (the file icon) adds or removes a file; on touch screens, so does a tap while selecting.
+    const touch = matchMedia("(pointer: coarse)").matches;
+    if (e.target.closest("[data-check]") || (touch && state.sel.size)) { clickSelect(f, { toggle: true }); return; }
+    // Files and folders open on one tap on touch screens, like the Drive app.
+    if (touch && state.view !== "trash") { openItem(f); return; }
+    clickSelect(f, e);
   });
   content.addEventListener("contextmenu", e => {
     const row = e.target.closest("[data-id]");
     if (!row) return;
     e.preventDefault(); e.stopPropagation();
-    showMenu(byId(row.dataset.id), e.clientX, e.clientY);
+    const f = byId(row.dataset.id);
+    if (state.sel.has(f.id) && state.sel.size > 1) { showBulkMenu(e.clientX, e.clientY); return; }
+    clickSelect(f, {});
+    showMenu(f, e.clientX, e.clientY);
+  });
+  // Long-press on touch screens starts selecting.
+  let pressTimer = null;
+  content.addEventListener("touchstart", e => {
+    const row = e.target.closest("[data-id]");
+    if (!row || e.target.closest("[data-more]")) return;
+    pressTimer = setTimeout(() => { pressTimer = "fired"; clickSelect(byId(row.dataset.id), { toggle: true }); }, 500);
+  }, { passive: true });
+  const cancelPress = () => { if (pressTimer && pressTimer !== "fired") clearTimeout(pressTimer); };
+  content.addEventListener("touchmove", cancelPress, { passive: true });
+  content.addEventListener("touchend", e => {
+    if (pressTimer === "fired") e.preventDefault(); // don't also open the file
+    else cancelPress();
+    pressTimer = null;
+  });
+  $("#selbar").addEventListener("click", e => {
+    const b = e.target.closest("[data-sel]");
+    if (b) guard("Couldn't do that", () => selectionAction(b.dataset.sel));
+  });
+  document.addEventListener("keydown", e => {
+    if ($("#modal-root").children.length || $("#viewer") || e.target.closest?.("input, select, textarea")) return;
+    if ($("#app").classList.contains("hidden")) return;
+    if (e.key === "Escape" && state.sel.size) { state.sel.clear(); renderSelection(); }
+    else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a" && state.items.length) { e.preventDefault(); selectionAction("all"); }
+    else if (e.key === "Delete" && state.sel.size && state.view !== "trash") guard("Couldn't move to trash", () => selectionAction("trash"));
+    else if (e.key === "Enter" && state.sel.size === 1) openItem(selectedFiles()[0]);
   });
 
   // Drag and drop files (and whole folders) onto the page.
