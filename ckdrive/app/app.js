@@ -612,7 +612,9 @@ const state = {
   next: null,
   loading: false,
   error: null,
-  sort: store.get("sort", "name"),
+  sortField: store.get("sortField", "name"),
+  sortDesc: store.get("sortDesc", false),
+  foldersFirst: store.get("foldersFirst", true),
   grid: store.get("grid", false),
   account: null,
   seq: 0,
@@ -620,7 +622,37 @@ const state = {
   anchor: null,         // last clicked id, for shift-click ranges
 };
 
-const SORTS = { name: "folder,name_natural", modified: "folder,modifiedTime desc", size: "folder,quotaBytesUsed desc" };
+// What a folder can be sorted by, like Drive. api = Drive's orderBy key (Type is sorted here, after loading the folder).
+const SORT_FIELDS = [
+  { key: "name", label: "Name", api: "name_natural", desc: false, up: "A to Z", down: "Z to A" },
+  { key: "type", label: "Type", api: null, desc: false, up: "A to Z", down: "Z to A" },
+  { key: "modified", label: "Date modified", api: "modifiedTime", desc: true, up: "Oldest first", down: "Newest first" },
+  { key: "modifiedByMe", label: "Date modified by me", api: "modifiedByMeTime", desc: true, up: "Oldest first", down: "Newest first" },
+  { key: "opened", label: "Date opened by me", api: "viewedByMeTime", desc: true, up: "Oldest first", down: "Newest first" },
+  { key: "created", label: "Date created", api: "createdTime", desc: true, up: "Oldest first", down: "Newest first" },
+  { key: "size", label: "Size", api: "quotaBytesUsed", desc: true, up: "Smallest first", down: "Largest first" },
+];
+const sortField = () => SORT_FIELDS.find(f => f.key === state.sortField) || SORT_FIELDS[0];
+function orderBy() {
+  const f = sortField();
+  return [state.foldersFirst ? "folder" : null, (f.api || "name_natural") + (state.sortDesc && f.api ? " desc" : "")].filter(Boolean).join(",");
+}
+/** Where the sort button shows: every folder and list except Recent, search results, Trash and Duplicates. */
+const sortable = () => ["files", "starred", "shared", "computers", "drives"].includes(state.view) || (state.view === "recent" && state.trail.length);
+
+/** Type (and Computers / Shared drives lists) are sorted here. */
+function sortLocally(items) {
+  const f = state.sortField, dir = state.sortDesc ? -1 : 1;
+  const ext = x => x.mimeType === FOLDER ? "0" : isNative(x) ? "1" + x.mimeType : "2" + ((/\.([a-z0-9]+)$/i.exec(x.name || "") || [, x.mimeType])[1] || "").toLowerCase();
+  const by = (a, b) => {
+    let c = 0;
+    if (f === "type") c = ext(a).localeCompare(ext(b));
+    else if (f === "size") c = Number(a.size || 0) - Number(b.size || 0);
+    else if (f !== "name") c = String(a.modifiedTime || "").localeCompare(String(b.modifiedTime || ""));
+    return (c || (a.name || "").localeCompare(b.name || "", undefined, { numeric: true, sensitivity: "base" })) * dir;
+  };
+  return [...items].sort((a, b) => state.foldersFirst && (a.mimeType === FOLDER) !== (b.mimeType === FOLDER) ? (a.mimeType === FOLDER ? -1 : 1) : by(a, b));
+}
 
 function currentFolder() {
   if (state.view === "files" || (["starred", "shared", "computers", "drives"].includes(state.view) && state.trail.length)) {
@@ -633,15 +665,15 @@ function currentFolder() {
 function queryFor() {
   const inside = state.trail.at(-1);
   switch (state.view) {
-    case "files": return [`${quote(inside.id)} in parents and trashed=false`, SORTS[state.sort]];
+    case "files": return [`${quote(inside.id)} in parents and trashed=false`, orderBy()];
     case "starred":
     case "shared":
     case "computers":
     case "drives":
-      if (state.trail.length) return [`${quote(inside.id)} in parents and trashed=false`, SORTS[state.sort], { driveId: inside.driveId }];
+      if (state.trail.length) return [`${quote(inside.id)} in parents and trashed=false`, orderBy(), { driveId: inside.driveId }];
       return state.view === "starred"
-        ? ["starred=true and trashed=false", "folder,name_natural"]
-        : ["sharedWithMe=true and trashed=false", "sharedWithMeTime desc"];
+        ? ["starred=true and trashed=false", orderBy()]
+        : ["sharedWithMe=true and trashed=false", orderBy()];
     case "recent": return [`trashed=false and mimeType!=${quote(FOLDER)}`, "recency desc"];
     case "search": return [`(name contains ${quote(state.query)} or fullText contains ${quote(state.query)}) and trashed=false`, null, { corpora: "allDrives" }];
     case "trash": return ["trashed=true and 'me' in owners", "recency desc"];
@@ -689,11 +721,16 @@ async function load() {
 async function listFor(pageToken) {
   if (!state.trail.length && state.view === "computers") {
     await index.sync();
-    return { files: [...index.folders].filter(([, f]) => !f.parents.length).map(([id, f]) => ({ id, name: f.name, mimeType: FOLDER, ownedByMe: true }))
-      .sort((a, b) => a.name.localeCompare(b.name)) };
+    return { files: sortLocally([...index.folders].filter(([, f]) => !f.parents.length).map(([id, f]) => ({ id, name: f.name, mimeType: FOLDER, ownedByMe: true }))) };
   }
-  if (!state.trail.length && state.view === "drives") return { files: (await drive.sharedDrives()).sort((a, b) => a.name.localeCompare(b.name)) };
+  if (!state.trail.length && state.view === "drives") return { files: sortLocally(await drive.sharedDrives()) };
   const [q, order, extra] = queryFor();
+  if (!pageToken && state.sortField === "type" && sortable()) {
+    // Drive can't sort by type: load the whole folder (up to 30 pages), then sort here.
+    let r = await drive.list(q, order, null, 1000, FIELDS, extra || {}), files = r.files || [], pages = 1;
+    while (r.nextPageToken && pages++ < 30) { r = await drive.list(q, order, r.nextPageToken, 1000, FIELDS, extra || {}); files = files.concat(r.files || []); }
+    return { files: sortLocally(files), nextPageToken: r.nextPageToken || null };
+  }
   return drive.list(q, order, pageToken, 100, FIELDS, extra || {});
 }
 
@@ -746,12 +783,14 @@ function renderChrome() {
     crumbs.append(a);
   });
   const listy = !["duplicates", "trash"].includes(state.view);
-  $("#sort").classList.toggle("hidden", !(state.view === "files" || state.trail.length));
+  $("#sort-btn").classList.toggle("hidden", !sortable());
+  $("#sort-btn").innerHTML = `${esc(sortField().label)} <span class="ms">${state.sortDesc ? "arrow_downward" : "arrow_upward"}</span>`;
+  $("#sort-btn").title = "Sort: " + (state.sortDesc ? sortField().down : sortField().up);
   $("#view-toggle").classList.toggle("hidden", !listy);
   $("#empty-trash").classList.toggle("hidden", state.view !== "trash");
   $("#rescan").classList.toggle("hidden", state.view !== "duplicates");
   $("#view-toggle .ms").textContent = state.grid ? "view_list" : "grid_view";
-  $("#sort").value = state.sort;
+
 }
 
 function emptyText() {
@@ -1702,7 +1741,35 @@ function wire() {
     const q = $("#search-input").value.trim();
     if (q) go("search", { query: q });
   };
-  $("#sort").onchange = e => { state.sort = e.target.value; store.set("sort", state.sort); load(); };
+  $("#sort-btn").onclick = e => {
+    e.stopPropagation();
+    const m = $("#sort-menu");
+    const was = m.classList.contains("hidden");
+    hideMenus();
+    if (!was) return;
+    // Tapping the current choice flips it (A to Z / Z to A, newest / oldest first).
+    m.innerHTML = `<div class="menu-title">Sort by</div>` + SORT_FIELDS.map(f => {
+      const on = f.key === state.sortField;
+      return `<button data-sort="${f.key}" class="${on ? "on" : ""}"><span class="ms">${on ? (state.sortDesc ? "arrow_downward" : "arrow_upward") : ""}</span>
+        <span class="grow">${esc(f.label)}${on ? `<small>${esc(state.sortDesc ? f.down : f.up)} · click again to reverse</small>` : ""}</span></button>`;
+    }).join("") + `<hr><button data-sort="folders"><span class="ms">${state.foldersFirst ? "check_box" : "check_box_outline_blank"}</span>Folders on top</button>`;
+    const r = $("#sort-btn").getBoundingClientRect();
+    m.style.left = Math.max(8, Math.min(r.left, innerWidth - 300)) + "px";
+    m.style.top = r.bottom + 4 + "px";
+    m.classList.remove("hidden");
+  };
+  $("#sort-menu").onclick = e => {
+    const b = e.target.closest("[data-sort]");
+    if (!b) return;
+    e.stopPropagation();
+    const k = b.dataset.sort;
+    if (k === "folders") state.foldersFirst = !state.foldersFirst;
+    else if (k === state.sortField) state.sortDesc = !state.sortDesc;
+    else { state.sortField = k; state.sortDesc = SORT_FIELDS.find(f => f.key === k).desc; }
+    store.set("sortField", state.sortField); store.set("sortDesc", state.sortDesc); store.set("foldersFirst", state.foldersFirst);
+    hideMenus();
+    load();
+  };
   $("#view-toggle").onclick = () => { state.grid = !state.grid; store.set("grid", state.grid); renderChrome(); renderList(); };
   $("#empty-trash").onclick = () => guard("Couldn't empty trash", async () => {
     if (!await confirmBox("Empty trash?", "Everything in Trash will be deleted forever. This can't be undone.", "Delete forever")) return;
